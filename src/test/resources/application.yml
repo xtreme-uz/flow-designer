@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: flow-designer
+  security:
+    oauth2:
+      client:
+        registration:
+          gitlab:
+            client-id: test-client-id
+            client-secret: test-client-secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "http://localhost:8080/login/oauth2/code/gitlab"
+            scope: read_user
+        provider:
+          gitlab:
+            authorization-uri: https://gitlab.com/oauth/authorize
+            token-uri: https://gitlab.com/oauth/token
+            user-info-uri: https://gitlab.com/api/v4/user
+            user-name-attribute: username
+
+server:
+  port: 0
+
+app:
+  git:
+    remote-url: ""
+    main-repo-path: ${java.io.tmpdir}/flow-designer-test/main
+    workspaces-path: ${java.io.tmpdir}/flow-designer-test/workspaces
+    default-branch: main
+    credentials:
+      username: ""
+      password: ""
+    cleanup:
+      max-idle-time: PT1H
+      check-interval: PT5M
+      enabled: false

@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: flow-designer
+  security:
+    oauth2:
+      client:
+        registration:
+          gitlab:
+            client-id: ${GITLAB_CLIENT_ID}
+            client-secret: ${GITLAB_CLIENT_SECRET}
+            authorization-grant-type: authorization_code
+            redirect-uri: ${GITLAB_REDIRECT_URL:{baseUrl}/login/oauth2/code/{registrationId}}
+            scope: read_user
+            client-name: GitLab
+        provider:
+          gitlab:
+            # Set GITLAB_BASE_URL to a self-hosted instance (e.g. https://gitlab.example.com)
+            authorization-uri: ${GITLAB_BASE_URL:https://gitlab.com}/oauth/authorize
+            token-uri: ${GITLAB_BASE_URL:https://gitlab.com}/oauth/token
+            user-info-uri: ${GITLAB_BASE_URL:https://gitlab.com}/api/v4/user
+            user-name-attribute: username
+
+# Other Git hosts use the same OAuth2 authorization-code flow — adding one is
+# a matter of declaring another registration/provider pair. The backend reads
+# user attributes provider-agnostically (see AuthController), so no Java change
+# is needed. Example, to enable GitHub login:
+#
+# spring.security.oauth2.client:
+#   registration:
+#     github:
+#       client-id: ${GITHUB_CLIENT_ID}
+#       client-secret: ${GITHUB_CLIENT_SECRET}
+#       scope: read:user,user:email
+#   # provider defaults for github are built into Spring Security
+
+server:
+  port: 8080
+  forward-headers-strategy: native
+
+app:
+  git:
+    remote-url: ${GIT_REMOTE_URL:}
+    main-repo-path: ${GIT_MAIN_REPO_PATH:/tmp/app/flows-repo/main}
+    workspaces-path: ${GIT_WORKSPACES_PATH:/tmp/app/flows-repo/workspaces}
+    default-branch: ${GIT_DEFAULT_BRANCH:main}
+    credentials:
+      username: ${GIT_USERNAME:}
+      password: ${GIT_TOKEN:}
+      ssh-key-path: ${GIT_SSH_KEY_PATH:}
+    main-repo-refresh-interval: PT5M
+    cleanup:
+      max-idle-time: PT24H
+      check-interval: PT30M
+      enabled: true

@@ -1,0 +1,49 @@
+.metadata-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.metadata-info-section {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.metadata-info-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.75rem;
+}
+
+.metadata-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.4rem 0;
+  font-size: 0.85rem;
+}
+
+.metadata-info-row + .metadata-info-row {
+  border-top: 1px solid #e5e7eb;
+}
+
+.metadata-info-label {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.metadata-info-value {
+  color: #1f2937;
+  text-align: right;
+}
+
+.metadata-info-date {
+  color: #9ca3af;
+  font-size: 0.8rem;
+}

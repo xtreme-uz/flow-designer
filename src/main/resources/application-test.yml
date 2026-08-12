@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: flow-designer
+
+server:
+  port: 8080
+
+app:
+  git:
+    remote-url: file:///tmp/test-flows-repo
+    main-repo-path: /tmp/app/flows-repo/main
+    workspaces-path: /tmp/app/flows-repo/workspaces
+    default-branch: main
+    credentials:
+      username:
+      password:
+      ssh-key-path:
+    cleanup:
+      max-idle-time: PT24H
+      check-interval: PT30M
+      enabled: true

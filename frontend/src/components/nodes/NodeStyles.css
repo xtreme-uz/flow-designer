@@ -1,0 +1,110 @@
+/* Custom Node Styles */
+.custom-node {
+  min-width: 180px;
+  border-radius: 8px;
+  background: white;
+  border: 2px solid;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s;
+}
+
+.custom-node.selected {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  transform: scale(1.02);
+}
+
+/* Initial Node (Green) */
+.initial-node {
+  border-color: #10b981;
+  border-radius: 16px;
+}
+
+.initial-node .node-badge {
+  background: #10b981;
+}
+
+/* Status Node (Blue) */
+.status-node {
+  border-color: #3b82f6;
+}
+
+.status-node .node-badge {
+  background: #3b82f6;
+}
+
+/* Final Node (Red) */
+.final-node {
+  border-color: #ef4444;
+  border-radius: 16px;
+}
+
+.final-node .node-badge {
+  background: #ef4444;
+}
+
+/* Node Header */
+.node-header {
+  padding: 4px 8px;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  justify-content: center;
+}
+
+.node-badge {
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Node Body */
+.node-body {
+  padding: 12px;
+}
+
+.node-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1f2937;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.node-description {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.node-action {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.action-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: #7c3aed;
+  background: #ede9fe;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+/* Custom Handles */
+.node-handle {
+  width: 10px;
+  height: 10px;
+  background: #6b7280;
+  border: 2px solid white;
+}
+
+.node-handle:hover {
+  background: #3b82f6;
+}

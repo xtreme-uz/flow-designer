@@ -1,0 +1,216 @@
+.edge-editor {
+  position: absolute;
+  right: 340px;
+  top: 20px;
+  width: 320px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  z-index: 20;
+}
+
+.edge-editor .editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+  color: white;
+  border-radius: 12px 12px 0 0;
+}
+
+.edge-editor .editor-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.edge-editor .close-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  font-size: 1.25rem;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.edge-editor .close-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.edge-editor form {
+  padding: 1.25rem;
+}
+
+.edge-info {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 0;
+}
+
+.info-label {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.info-value {
+  font-weight: 600;
+  color: #1f2937;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+}
+
+.edge-editor .form-group {
+  margin-bottom: 1.5rem;
+}
+
+.edge-editor .form-group > label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.95rem;
+}
+
+.result-type-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.result-type-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.result-type-option:hover {
+  border-color: #c7d2fe;
+  background: #f9fafb;
+}
+
+.result-type-option.selected {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
+
+.result-type-option input[type="radio"] {
+  margin-top: 0.25rem;
+  accent-color: #6366f1;
+}
+
+.option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.option-label {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.9rem;
+}
+
+.option-description {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  font-weight: 500;
+  color: #374151;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #6366f1;
+}
+
+.edge-editor small {
+  display: block;
+  margin-top: 0.5rem;
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.edge-editor .form-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.edge-editor .btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.edge-editor .btn-primary {
+  background: #6366f1;
+  color: white;
+}
+
+.edge-editor .btn-primary:hover {
+  background: #4f46e5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+.edge-editor .btn-secondary {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.edge-editor .btn-secondary:hover {
+  background: #d1d5db;
+}
+
+.danger-zone {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.edge-editor .btn-danger {
+  width: 100%;
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.edge-editor .btn-danger:hover {
+  background: #fecaca;
+  border-color: #f87171;
+}
