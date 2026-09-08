@@ -4,7 +4,7 @@
 
 A visual editor for payment state machines. Users create payment flows (nodes + edges) in a React canvas and save them to Git in THUB configurator format — one JSON file per table, the layout a configuration deployer reads to load flows into a payment hub database. THUB data = single source of truth; React Flow canvas is derived via dagre auto-layout.
 
-**Stack:** Spring Boot 4.0.2 (Java 21) + React 19.1 + React Flow 12.10 + dagre + JGit 7.5 + Vite 6.3
+**Stack:** Spring Boot 4.1.1 (Java 25 LTS) + React 19.2 + React Flow 12.11 + dagre 3 + JGit 7.8 + Vite 8
 
 ## Project Structure
 
@@ -14,7 +14,7 @@ flow-designer/
 ├── pom.xml                          # Maven config (builds frontend too, clean plugin)
 ├── run-dev.sh                       # Dev startup (HTTPS, GitLab OAuth2, self-signed cert)
 ├── frontend/                        # React app
-│   ├── package.json                 # @xyflow/react, react 19.1, @dagrejs/dagre
+│   ├── package.json                 # @xyflow/react, react 19.2, @dagrejs/dagre 3
 │   ├── vite.config.js               # Proxy /api → localhost:8080
 │   └── src/
 │       ├── App.jsx                  # Main canvas + state (nodes, edges, flow CRUD)

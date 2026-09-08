@@ -1,42 +1,32 @@
 import { useState, useEffect, useRef } from 'react';
 import './NodeEditor.css';
 
+const EMPTY_ACTION = {
+  moduleId: '',
+  actionId: '',
+  maxTryingTime: '',
+  warningTryingTime: ''
+};
+
 /**
- * Side panel for editing node properties
+ * Side panel for editing node properties.
+ *
+ * Seeded from the node on mount rather than synced by an effect: App keys this
+ * component by node id, so selecting another node remounts it with that node's
+ * values.
  */
 export default function NodeEditor({ node, availableStatuses = [], onUpdate, onClose }) {
-  const [formData, setFormData] = useState({
-    statusId: '',
-    description: '',
-    action: {
-      moduleId: '',
-      actionId: '',
-      maxTryingTime: '',
-      warningTryingTime: ''
-    }
-  });
+  const [formData, setFormData] = useState(() => ({
+    statusId: node?.data?.statusId || '',
+    description: node?.data?.description || '',
+    action: node?.data?.action || EMPTY_ACTION
+  }));
 
   // Combobox state
-  const [statusQuery, setStatusQuery] = useState('');
+  const [statusQuery, setStatusQuery] = useState(() => node?.data?.statusId || '');
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
   const inputRef = useRef(null);
-
-  useEffect(() => {
-    if (node) {
-      setFormData({
-        statusId: node.data.statusId || '',
-        description: node.data.description || '',
-        action: node.data.action || {
-          moduleId: '',
-          actionId: '',
-          maxTryingTime: '',
-          warningTryingTime: ''
-        }
-      });
-      setStatusQuery(node.data.statusId || '');
-    }
-  }, [node]);
 
   // Close dropdown on outside click
   useEffect(() => {

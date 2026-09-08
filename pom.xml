@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.2</version>
+        <version>4.1.1</version>
         <relativePath/>
     </parent>
 
@@ -18,11 +18,12 @@
     <description>Flow Designer - Spring Boot with React Flow</description>
 
     <properties>
-        <java.version>21</java.version>
-        <node.version>v22.12.0</node.version>
-        <npm.version>10.9.0</npm.version>
-        <jgit.version>7.5.0.202512021534-r</jgit.version>
-        <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
+        <java.version>25</java.version>
+        <node.version>v24.20.0</node.version>
+        <npm.version>11.19.0</npm.version>
+        <frontend-maven-plugin.version>2.0.2</frontend-maven-plugin.version>
+        <jgit.version>7.8.0.202609011348-r</jgit.version>
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
         <skipTests>false</skipTests>
     </properties>
 
@@ -90,7 +91,7 @@
             <plugin>
                 <groupId>com.github.eirslett</groupId>
                 <artifactId>frontend-maven-plugin</artifactId>
-                <version>1.15.1</version>
+                <version>${frontend-maven-plugin.version}</version>
                 <configuration>
                     <workingDirectory>frontend</workingDirectory>
                     <installDirectory>target</installDirectory>

@@ -4,8 +4,8 @@ Visual editor for payment state machines. Create, edit, and manage payment flows
 
 ## Tech Stack
 
-- **Backend:** Spring Boot 4.0.2, Java 21, JGit, Spring Security OAuth2
-- **Frontend:** React 19.1, React Flow 12.10, dagre (auto-layout), Vite
+- **Backend:** Spring Boot 4.1.1, Java 25 (LTS), JGit, Spring Security OAuth2
+- **Frontend:** React 19.2, React Flow 12.11, dagre (auto-layout), Vite 8
 - **Storage:** Git repository (no database)
 - **Auth:** GitLab OAuth2 (gitlab.com or a self-hosted instance)
 
@@ -13,9 +13,9 @@ Visual editor for payment state machines. Create, edit, and manage payment flows
 
 ### Prerequisites
 
-- Java 21+
+- Java 25+ (LTS)
 - Maven 3.9+
-- Node.js 18+
+- Node.js 22+ (the build downloads its own Node 24 LTS)
 - Git
 - GitLab OAuth App credentials (Client ID + Secret)
 
