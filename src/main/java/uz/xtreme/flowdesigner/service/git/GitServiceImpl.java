@@ -479,13 +479,9 @@ public class GitServiceImpl implements GitService {
             Git git = getGitInstance(workspace);
             try {
                 // Merging into a dirty tree is what makes a pull dangerous: git
-                // refuses it, and any recovery from a half-done merge risks the
-                // files the user just saved. Ask for a commit instead.
-                // Same scope as commit and status: only THUB/ is the app's data
-                if (!git.status().addPath(THUB_DIR).call().isClean()) {
-                    throw new GitSyncConflictException("pull",
-                            "The workspace has uncommitted changes — commit them before pulling.");
-                }
+                // refuses it, and recovery from a half-done merge is a repository-wide
+                // reset, so the whole tree — not just THUB/ — has to be clean first.
+                requireCleanTreeForPull(git);
 
                 ObjectId headBeforePull = git.getRepository().resolve(Constants.HEAD);
                 var pullCommand = git.pull();
@@ -702,6 +698,45 @@ public class GitServiceImpl implements GitService {
     }
 
     /**
+     * Refuses a pull that could cost the user work. Names the files, and
+     * distinguishes the app's own data from anything else in the clone, because
+     * the two need different answers: commit the flows, remove the strays.
+     */
+    private void requireCleanTreeForPull(Git git) throws GitAPIException {
+        Status status = git.status().call();
+        if (status.isClean()) {
+            return;
+        }
+
+        Set<String> changed = new TreeSet<>();
+        changed.addAll(status.getAdded());
+        changed.addAll(status.getChanged());
+        changed.addAll(status.getRemoved());
+        changed.addAll(status.getModified());
+        changed.addAll(status.getMissing());
+        changed.addAll(status.getUntracked());
+        changed.addAll(status.getConflicting());
+
+        List<String> flowChanges = changed.stream().filter(p -> p.startsWith(THUB_DIR + "/")).toList();
+        List<String> otherChanges = changed.stream().filter(p -> !p.startsWith(THUB_DIR + "/")).toList();
+
+        StringBuilder detail = new StringBuilder();
+        if (!flowChanges.isEmpty()) {
+            detail.append("commit your flow changes first (").append(String.join(", ", flowChanges)).append(")");
+        }
+        if (!otherChanges.isEmpty()) {
+            if (!detail.isEmpty()) {
+                detail.append("; ");
+            }
+            detail.append("and remove these files, which Flow Designer does not manage (")
+                    .append(String.join(", ", otherChanges)).append(")");
+        }
+
+        throw new GitSyncConflictException("pull",
+                "The workspace has uncommitted changes — " + detail + ".");
+    }
+
+    /**
      * Puts the working tree back where it was before a failed pull. Without this
      * the workspace keeps the conflicted files and MERGE_HEAD, and the user's next
      * commit records the conflict markers as a merge commit.
@@ -829,7 +864,9 @@ public class GitServiceImpl implements GitService {
                 fetchCommand.setCredentialsProvider(credentialsProvider);
             }
             fetchCommand.call();
-        } catch (GitAPIException e) {
+        } catch (GitAPIException | RuntimeException e) {
+            // JGit wraps transport and IO failures in unchecked JGitInternalException;
+            // an unreachable remote must leave the status readable, only staler
             log.debug("Could not refresh remote refs for workspace {}: {}", workspace.id(), e.getMessage());
         }
     }

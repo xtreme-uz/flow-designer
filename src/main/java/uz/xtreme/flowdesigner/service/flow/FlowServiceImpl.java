@@ -426,20 +426,18 @@ public class FlowServiceImpl implements FlowService {
         Map<String, ThubFlowStatusTransition> allTransitions = thubDataService.readFlowStatusTransitions(basePath);
         Map<String, ThubFlowAssignment> allAssignments = thubDataService.readFlowAssignments(basePath);
 
-        // Filter actions by flowTypeId
-        List<ThubFlowStatusAction> actions = allActions.values().stream()
-                .filter(a -> flowTypeId.equals(a.flowTypeId()))
-                .toList();
+        // Read and write must claim the same records: anything a save would replace
+        // has to be loaded here, or saving the flow would quietly drop it
+        List<ThubFlowStatusAction> actions = ownedBy(allActions, flowTypeId,
+                ThubFlowStatusAction::flowTypeId,
+                a -> ThubDataService.flowStatusActionKey(flowTypeId, a.flowStatusId()));
 
-        // Filter transitions by flowTypeId
-        List<ThubFlowStatusTransition> transitions = allTransitions.values().stream()
-                .filter(t -> flowTypeId.equals(t.flowTypeId()))
-                .toList();
+        List<ThubFlowStatusTransition> transitions = ownedBy(allTransitions, flowTypeId,
+                ThubFlowStatusTransition::flowTypeId,
+                t -> ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()));
 
-        // Filter assignments by flowTypeId
-        List<ThubFlowAssignment> assignments = allAssignments.values().stream()
-                .filter(a -> flowTypeId.equals(a.flowTypeId()))
-                .toList();
+        List<ThubFlowAssignment> assignments = ownedBy(allAssignments, flowTypeId,
+                ThubFlowAssignment::flowTypeId, null);
 
         // Collect status IDs used by this flow
         Set<String> usedStatusIds = new HashSet<>();
@@ -470,6 +468,31 @@ public class FlowServiceImpl implements FlowService {
      * unambiguous, and it also covers FlowAssignment, whose key
      * ({@code R_{assignmentId}}) carries no flow name at all.
      */
+    /**
+     * Whether a record belongs to this flow: by its {@code flowtypeid} field, or —
+     * for records written before that field was populated — by the key this flow
+     * would store it under. Shared by the read and remove paths so a record that
+     * a save replaces is also a record the canvas showed.
+     */
+    private static <T> boolean isOwnedBy(String key, T record, String flowTypeId,
+                                         Function<T, String> flowTypeIdExtractor,
+                                         Function<T, String> keyBuilder) {
+        String recordFlowTypeId = flowTypeIdExtractor.apply(record);
+        if (recordFlowTypeId != null) {
+            return flowTypeId.equals(recordFlowTypeId);
+        }
+        return keyBuilder != null && key.equals(keyBuilder.apply(record));
+    }
+
+    private static <T> List<T> ownedBy(Map<String, T> map, String flowTypeId,
+                                       Function<T, String> flowTypeIdExtractor,
+                                       Function<T, String> keyBuilder) {
+        return map.entrySet().stream()
+                .filter(e -> isOwnedBy(e.getKey(), e.getValue(), flowTypeId, flowTypeIdExtractor, keyBuilder))
+                .map(Map.Entry::getValue)
+                .toList();
+    }
+
     private static ThubFlowStatusAction withFlowTypeId(ThubFlowStatusAction action, String flowTypeId) {
         if (flowTypeId.equals(action.flowTypeId())) {
             return action;
@@ -511,12 +534,7 @@ public class FlowServiceImpl implements FlowService {
     private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
                                                Function<T, String> flowTypeIdExtractor,
                                                Function<T, String> keyBuilder) {
-        map.entrySet().removeIf(entry -> {
-            String recordFlowTypeId = flowTypeIdExtractor.apply(entry.getValue());
-            if (recordFlowTypeId != null) {
-                return flowTypeId.equals(recordFlowTypeId);
-            }
-            return keyBuilder != null && entry.getKey().equals(keyBuilder.apply(entry.getValue()));
-        });
+        map.entrySet().removeIf(entry ->
+                isOwnedBy(entry.getKey(), entry.getValue(), flowTypeId, flowTypeIdExtractor, keyBuilder));
     }
 }

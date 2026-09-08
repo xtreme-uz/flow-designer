@@ -220,6 +220,30 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("A record written without a flowtypeid is loaded, kept and stamped")
+        void legacyRecordIsAdoptedRatherThanDropped() {
+            saveTestFlow(workspacePath, "payment");
+            Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(workspacePath);
+            // A status the flow already has, so only the missing flowtypeid is at issue
+            actions.put(ThubDataService.flowStatusActionKey("payment", "FINISHED"),
+                    new ThubFlowStatusAction(null, "FINISHED", "module", "action", null, null, null));
+            thubDataService.writeFlowStatusActions(workspacePath, actions);
+
+            Optional<ThubDeploymentData> loaded = flowService.getFlow(workspace, "payment");
+            assertTrue(loaded.isPresent());
+            assertTrue(loaded.get().flowStatusActions().stream()
+                            .anyMatch(a -> "FINISHED".equals(a.flowStatusId())),
+                    "a record a save would replace has to be visible on the canvas");
+
+            flowService.saveFlow(workspace, "payment", loaded.get());
+
+            Map<String, ThubFlowStatusAction> stored = thubDataService.readFlowStatusActions(workspacePath);
+            ThubFlowStatusAction adopted = stored.get(ThubDataService.flowStatusActionKey("payment", "FINISHED"));
+            assertNotNull(adopted, "the record survives the save");
+            assertEquals("payment", adopted.flowTypeId(), "and gains the flow it belongs to");
+        }
+
+        @Test
         @DisplayName("Saving keeps the assignments handed back by the client")
         void saveKeepsAssignments() {
             ThubDeploymentData base = createValidDeploymentData("payment");
