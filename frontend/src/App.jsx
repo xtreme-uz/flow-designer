@@ -578,6 +578,7 @@ export default function App() {
         <Toolbar onArrange={handleArrange} />
         {selectedNode && (
           <NodeEditor
+            key={selectedNode.id}
             node={selectedNode}
             availableStatuses={availableStatuses}
             onUpdate={onNodeUpdate}
@@ -586,6 +587,7 @@ export default function App() {
         )}
         {selectedEdge && (
           <EdgeEditor
+            key={selectedEdge.id}
             edge={selectedEdge}
             onUpdate={onEdgeUpdate}
             onDelete={onEdgeDelete}

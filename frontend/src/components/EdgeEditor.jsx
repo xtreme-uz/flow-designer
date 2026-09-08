@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import './EdgeEditor.css';
 
 /**
@@ -14,24 +14,18 @@ const RESULT_TYPES = [
 ];
 
 /**
- * Side panel for editing edge properties
+ * Side panel for editing edge properties.
+ *
+ * The form is seeded from the edge on mount, not synced by an effect: App keys
+ * this component by edge id, so selecting another edge remounts it with that
+ * edge's values instead of cascading a render to copy them in.
  */
 export default function EdgeEditor({ edge, onUpdate, onDelete, onClose }) {
-  const [formData, setFormData] = useState({
-    label: 'success',
-    actionResultTypeIds: 'success',
-    storeAsRequestResult: true
-  });
-
-  useEffect(() => {
-    if (edge) {
-      setFormData({
-        label: edge.label || edge.data?.actionResultTypeIds || 'success',
-        actionResultTypeIds: edge.data?.actionResultTypeIds || edge.label || 'success',
-        storeAsRequestResult: edge.data?.storeAsRequestResult ?? true
-      });
-    }
-  }, [edge]);
+  const [formData, setFormData] = useState(() => ({
+    label: edge?.label || edge?.data?.actionResultTypeIds || 'success',
+    actionResultTypeIds: edge?.data?.actionResultTypeIds || edge?.label || 'success',
+    storeAsRequestResult: edge?.data?.storeAsRequestResult ?? true
+  }));
 
   const handleResultTypeChange = (value, checked) => {
     setFormData(prev => {

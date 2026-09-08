@@ -152,6 +152,17 @@ export default function GitPanel({ hasUnsavedChanges }) {
                   ))}
                 </ul>
               )}
+              {workspaceStatus.unmanagedFiles?.length > 0 && (
+                <div className="unmanaged-files">
+                  <span>These files are not part of any flow. Commit ignores them, but Pull
+                    will not run until they are removed:</span>
+                  <ul className="changed-files">
+                    {workspaceStatus.unmanagedFiles.map((file) => (
+                      <li key={file}>{file}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="status-item">
                 <span className="status-label">Remote:</span>
                 <span className="status-value">

@@ -296,3 +296,19 @@
   cursor: default;
   opacity: 0.6;
 }
+
+.unmanaged-files {
+  margin: 0.35rem 0 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border-left: 3px solid #b0761d;
+  border-radius: 0 3px 3px 0;
+  background: rgba(176, 118, 29, 0.12);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: #7a5311;
+}
+
+.unmanaged-files .changed-files {
+  margin-top: 0.3rem;
+  color: #7a5311;
+}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -43,16 +43,26 @@ export default function Header({
     return () => document.removeEventListener('click', handleClick);
   }, [showUserMenu]);
 
+  // The branch list is fetched when the modal opens; the loading flag is set by
+  // the click that opens it, so nothing sets state synchronously inside an effect
   useEffect(() => {
-    if (showWorkspaceModal) {
-      setLoadingBranches(true);
-      setUseCustomBranch(false);
-      api.listBranches()
-        .then(list => setBranches(list))
-        .catch(() => setBranches([]))
-        .finally(() => setLoadingBranches(false));
-    }
+    if (!showWorkspaceModal) return;
+    let active = true;
+
+    api.listBranches()
+      .then(list => { if (active) setBranches(list); })
+      .catch(() => { if (active) setBranches([]); })
+      .finally(() => { if (active) setLoadingBranches(false); });
+
+    // The modal can be closed and reopened while a request is in flight
+    return () => { active = false; };
   }, [showWorkspaceModal]);
+
+  const openWorkspaceModal = () => {
+    setLoadingBranches(true);
+    setUseCustomBranch(false);
+    setShowWorkspaceModal(true);
+  };
 
   const handleDelete = () => {
     if (window.confirm(`Are you sure you want to delete "${currentFlowName}"? This cannot be undone.`)) {
@@ -154,7 +164,7 @@ export default function Header({
         </div>
 
         <div className="header-right">
-          <div className="branch-info" onClick={() => setShowWorkspaceModal(true)}>
+          <div className="branch-info" onClick={openWorkspaceModal}>
             <div className="workspace-branch">
               {isMainBranch ? '🔒' : '🌿'} {branch}
             </div>
@@ -306,24 +316,39 @@ function FlowListModal({ onClose, onLoadFlow }) {
   const [error, setError] = useState(null);
   const [viewSource, setViewSource] = useState(isMainBranch ? 'main' : 'workspace');
 
-  const loadFlows = useCallback(async () => {
+  // Switching source shows the spinner again; the initial value covers the
+  // first load, so the effect below only ever sets state from its own callbacks
+  const switchSource = (source) => {
+    // Re-selecting the current source re-runs no effect, so the spinner it
+    // turned on would never be turned off again
+    if (source === viewSource) return;
     setLoading(true);
+    // Otherwise the previous source's error sits above the new source's spinner
     setError(null);
-    try {
-      const flowList = viewSource === 'main'
-        ? await api.listFlowsFromMain()
-        : await api.listWorkspaceFlows(branch);
-      setFlows(flowList);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [viewSource, branch]);
+    setViewSource(source);
+  };
 
   useEffect(() => {
-    loadFlows();
-  }, [loadFlows]);
+    let active = true;
+
+    (async () => {
+      try {
+        const flowList = viewSource === 'main'
+          ? await api.listFlowsFromMain()
+          : await api.listWorkspaceFlows(branch);
+        if (!active) return;
+        setFlows(flowList);
+        setError(null);
+      } catch (err) {
+        if (active) setError(err.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+
+    // The modal can be closed while the request is in flight
+    return () => { active = false; };
+  }, [viewSource, branch]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -338,13 +363,13 @@ function FlowListModal({ onClose, onLoadFlow }) {
             <div className="view-selector">
               <button
                 className={`btn ${viewSource === 'workspace' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setViewSource('workspace')}
+                onClick={() => switchSource('workspace')}
               >
                 Workspace
               </button>
               <button
                 className={`btn ${viewSource === 'main' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => setViewSource('main')}
+                onClick={() => switchSource('main')}
               >
                 Main Branch
               </button>

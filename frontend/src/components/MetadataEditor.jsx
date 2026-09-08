@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import './MetadataEditor.css';
 
 /**
@@ -7,21 +7,13 @@ import './MetadataEditor.css';
  * onSave returns an object that gets merged into currentDeploymentData.flowType.
  */
 export default function MetadataEditor({ metadata, onSave, onClose }) {
-  const [formData, setFormData] = useState({
-    description: '',
-    version: '1.0',
-    component: 'THUB'
-  });
-
-  useEffect(() => {
-    if (metadata) {
-      setFormData({
-        description: metadata.description || '',
-        version: metadata.version || '1.0',
-        component: metadata.component || 'THUB'
-      });
-    }
-  }, [metadata]);
+  // The modal is mounted when it opens, so the metadata it was opened with is
+  // the metadata it edits — no effect needed to copy it in
+  const [formData, setFormData] = useState(() => ({
+    description: metadata?.description || '',
+    version: metadata?.version || '1.0',
+    component: metadata?.component || 'THUB'
+  }));
 
   const handleChange = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
