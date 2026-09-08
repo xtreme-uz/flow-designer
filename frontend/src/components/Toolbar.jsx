@@ -48,7 +48,7 @@ export default function Toolbar({ onArrange }) {
           className="toolbar-item final-item"
           draggable
           onDragStart={(e) => onDragStart(e, 'finalNode', {
-            statusId: 'FINISHED',
+            statusId: '',
             description: 'Final status',
             isInitial: false,
             isFinal: true

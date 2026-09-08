@@ -232,10 +232,6 @@ public class FlowServiceImpl implements FlowService {
             throw new FlowNotFoundException(oldFlowTypeId, workspace.id());
         }
 
-        // Delete old records
-        deleteFlow(workspace, oldFlowTypeId);
-
-        // Re-create with new flowTypeId
         ThubDeploymentData data = oldData.get();
         ThubFlowType renamedFlowType = new ThubFlowType(
                 newFlowTypeId,
@@ -278,6 +274,14 @@ public class FlowServiceImpl implements FlowService {
                 renamedActions, renamedTransitions, renamedAssignments
         );
 
+        // Validate before removing anything: the rename is a delete followed by a
+        // save, and a save rejected after the delete would leave no flow at all
+        List<String> dataErrors = validateFlow(renamedData);
+        if (!dataErrors.isEmpty()) {
+            throw new FlowValidationException(dataErrors);
+        }
+
+        deleteFlow(workspace, oldFlowTypeId);
         saveFlow(workspace, newFlowTypeId, renamedData);
         log.info("Renamed flow '{}' to '{}' in workspace '{}'", oldFlowTypeId, newFlowTypeId, workspace.id());
     }

@@ -535,6 +535,26 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("Should keep the original flow when the rename would produce invalid data")
+        void renameKeepsFlowWhenValidationFails() {
+            saveTestFlow(workspacePath, "payment");
+            // Strip the initial status so re-saving under the new name is rejected
+            Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(workspacePath);
+            ThubFlowType broken = flowTypes.get(ThubDataService.flowTypeKey("payment"));
+            flowTypes.put(ThubDataService.flowTypeKey("payment"), new ThubFlowType(
+                    broken.id(), "MISSING_STATUS", broken.finalFlowStatusId(), broken.description(),
+                    broken.version(), broken.component(), broken.createdBy(), broken.createdAt(),
+                    broken.lastModifiedBy(), broken.lastModifiedAt(), broken.categorization()));
+            thubDataService.writeFlowTypes(workspacePath, flowTypes);
+
+            assertThrows(FlowValidationException.class, () ->
+                    flowService.renameFlow(workspace, "payment", "payment-renamed"));
+
+            assertTrue(flowService.flowExists(workspace, "payment"),
+                    "a rejected rename must not leave the flow deleted");
+        }
+
+        @Test
         @DisplayName("Should throw for invalid new name")
         void renameToInvalidName() {
             saveTestFlow(workspacePath, "valid-flow");

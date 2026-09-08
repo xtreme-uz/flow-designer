@@ -314,6 +314,9 @@ function FlowListModal({ onClose, onLoadFlow }) {
   // Switching source shows the spinner again; the initial value covers the
   // first load, so the effect below only ever sets state from its own callbacks
   const switchSource = (source) => {
+    // Re-selecting the current source re-runs no effect, so the spinner it
+    // turned on would never be turned off again
+    if (source === viewSource) return;
     setLoading(true);
     setViewSource(source);
   };
