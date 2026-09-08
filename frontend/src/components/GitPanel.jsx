@@ -47,6 +47,9 @@ export default function GitPanel({ hasUnsavedChanges }) {
       setCommitMessage('');
       toast.success('Changes committed successfully');
     } catch (err) {
+      // A 409 means the workspace moved on: pull the current HEAD in, otherwise
+      // every retry re-sends the same stale expectedVersion and fails again
+      await refreshStatus().catch(() => {});
       toast.error(`Commit failed: ${err.message}`);
     } finally {
       setIsCommitting(false);

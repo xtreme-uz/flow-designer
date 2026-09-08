@@ -314,6 +314,64 @@ class FlowControllerTest {
         }
 
         @Test
+        @DisplayName("PUT /api/workspaces/flows/{name} - keeps the stored creation audit")
+        void updateFlowKeepsCreationAudit() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData stored = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "original-author", createdAt, "original-author", createdAt, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            // What the canvas sends back: no audit fields at all
+            ThubDeploymentData incoming = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            null, null, null, null, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
+
+            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
+                    new FlowController.UpdateFlowRequest(incoming));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            ThubFlowType result = saved.getValue().flowType();
+            assertEquals("original-author", result.createdBy());
+            assertEquals(createdAt, result.createdAt());
+            assertEquals(USER_ID, result.lastModifiedBy());
+        }
+
+        @Test
+        @DisplayName("PUT /api/workspaces/flows/{name} - refuses a forged author")
+        void updateFlowIgnoresForgedAuthor() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData stored = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "original-author", createdAt, "original-author", createdAt, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            ThubDeploymentData forged = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"),
+                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"), Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
+
+            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
+                    new FlowController.UpdateFlowRequest(forged));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            assertEquals("original-author", saved.getValue().flowType().createdBy());
+            assertEquals(createdAt, saved.getValue().flowType().createdAt());
+        }
+
+        @Test
         @DisplayName("POST /api/workspaces/flows - throws when flow exists")
         void createFlowAlreadyExists() {
             when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
@@ -327,7 +385,7 @@ class FlowControllerTest {
         @DisplayName("PUT /api/workspaces/flows/{name} - update flow with ThubDeploymentData")
         void updateFlow() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
 
             FlowSummary result = controller.updateFlow(
                     USER_ID, BRANCH, FLOW_NAME,
@@ -344,7 +402,7 @@ class FlowControllerTest {
         @DisplayName("PUT /api/workspaces/flows/{name} - sets lastModifiedBy from header")
         void updateFlowSetsLastModifiedBy() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
 
             controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
                     new FlowController.UpdateFlowRequest(deploymentData));
@@ -357,7 +415,7 @@ class FlowControllerTest {
         @Test
         @DisplayName("PUT /api/workspaces/flows/{name} - throws when not found")
         void updateFlowNotFound() {
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.empty());
 
             assertThrows(FlowNotFoundException.class, () ->
                     controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,

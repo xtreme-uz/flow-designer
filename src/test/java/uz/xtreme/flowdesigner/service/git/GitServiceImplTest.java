@@ -62,6 +62,9 @@ class GitServiceImplTest {
 
             initGit.add().addFilepattern(".").call();
             initGit.commit()
+                    // The service disables signing for the same reason: a global
+                    // commit.gpgsign on the machine must not break the fixture
+                    .setSign(false)
                     .setMessage("Initial commit")
                     .setAuthor("Test", "test@example.com")
                     .call();
@@ -127,6 +130,27 @@ class GitServiceImplTest {
 
             assertFalse(status.clean());
             assertTrue(status.changedFiles().contains("THUB/FlowType-data.json"));
+        }
+
+        @Test
+        @DisplayName("Reports the branch as pushed once a locally created branch has been pushed")
+        void reportsUpstreamAfterFirstPush() throws IOException {
+            // A branch created locally has no upstream config; only the first push
+            // establishes it, and without that the status is stuck on "not pushed"
+            WorkspaceInfo feature = gitService.getOrCreateWorkspace("statususer", "feature/TASK-7-status");
+            Files.writeString(feature.path().resolve("feature.json"), "{}");
+            gitService.add(feature, ".");
+            gitService.commit(feature, "Feature work",
+                    AuditInfo.of("statususer", "Status User", "status@example.com"), null);
+
+            assertEquals(1, gitService.getStatus(feature).aheadCount(),
+                    "the commit is unpushed before the push");
+
+            gitService.push(feature);
+            WorkspaceStatus status = gitService.getStatus(feature);
+
+            assertTrue(status.hasUpstream(), "the branch exists on the remote after the push");
+            assertEquals(0, status.aheadCount());
         }
 
         @Test
@@ -235,6 +259,22 @@ class GitServiceImplTest {
             gitService.cleanupIdleWorkspacesOlderThan(Instant.now().plusSeconds(60));
 
             assertTrue(gitService.getWorkspace("idleuser2", "master").isPresent());
+        }
+
+        @Test
+        @DisplayName("Removes an idle feature-branch workspace once its work is pushed")
+        void removesPushedFeatureBranchWorkspace() throws IOException {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("idleuser4", "feature/TASK-9-done");
+            Files.writeString(workspace.path().resolve("done.json"), "{}");
+            gitService.add(workspace, ".");
+            gitService.commit(workspace, "Done",
+                    AuditInfo.of("idleuser4", "Idle", "idle@example.com"), null);
+            gitService.push(workspace);
+
+            gitService.cleanupIdleWorkspacesOlderThan(Instant.now().plusSeconds(60));
+
+            assertTrue(gitService.getWorkspace("idleuser4", "feature/TASK-9-done").isEmpty(),
+                    "nothing is left to lose once the branch is pushed");
         }
 
         @Test

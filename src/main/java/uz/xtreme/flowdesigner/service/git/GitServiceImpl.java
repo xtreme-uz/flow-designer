@@ -15,10 +15,13 @@ import org.eclipse.jgit.api.errors.TransportException;
 import org.eclipse.jgit.api.MergeResult;
 import org.eclipse.jgit.api.PullResult;
 import org.eclipse.jgit.lib.BranchTrackingStatus;
+import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.StoredConfig;
+import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.PushResult;
@@ -549,6 +552,7 @@ public class GitServiceImpl implements GitService {
                 }
                 // A rejected push comes back as a status on the ref update, not as an exception
                 verifyPushResults(pushCommand.call(), workspace);
+                configureUpstreamIfMissing(git);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to push to remote", e);
@@ -625,6 +629,91 @@ public class GitServiceImpl implements GitService {
                 "Pull did not complete — resolve the conflict in the workspace and try again. " + detail);
     }
 
+    /**
+     * Points a locally created branch at its remote counterpart after the first
+     * push. JGit's push does not write branch.&lt;name&gt;.remote/merge, and without
+     * them {@link BranchTrackingStatus} reports nothing at all — the workspace
+     * would keep claiming the branch was never pushed, and idle cleanup would
+     * keep treating every commit on it as unpushed work.
+     */
+    private void configureUpstreamIfMissing(Git git) {
+        try {
+            Repository repo = git.getRepository();
+            String branch = repo.getBranch();
+            if (branch == null || branch.isBlank()) {
+                return;
+            }
+            StoredConfig config = repo.getConfig();
+            String remote = config.getString(ConfigConstants.CONFIG_BRANCH_SECTION, branch,
+                    ConfigConstants.CONFIG_KEY_REMOTE);
+            String merge = config.getString(ConfigConstants.CONFIG_BRANCH_SECTION, branch,
+                    ConfigConstants.CONFIG_KEY_MERGE);
+            if (remote != null && merge != null) {
+                return;
+            }
+            config.setString(ConfigConstants.CONFIG_BRANCH_SECTION, branch,
+                    ConfigConstants.CONFIG_KEY_REMOTE, Constants.DEFAULT_REMOTE_NAME);
+            config.setString(ConfigConstants.CONFIG_BRANCH_SECTION, branch,
+                    ConfigConstants.CONFIG_KEY_MERGE, Constants.R_HEADS + branch);
+            config.save();
+            log.debug("Recorded upstream origin/{} for branch {}", branch, branch);
+        } catch (IOException e) {
+            // Only the ahead/behind reporting degrades; the push itself succeeded
+            log.warn("Failed to record upstream branch configuration", e);
+        }
+    }
+
+    /**
+     * Whether the remote already carries this branch.
+     */
+    private boolean hasRemoteBranch(Repository repo, String branch) throws IOException {
+        return BranchTrackingStatus.of(repo, branch) != null
+                || repo.resolve(remoteRef(branch)) != null;
+    }
+
+    /**
+     * Commits that exist only in this workspace.
+     *
+     * <p>Prefers {@link BranchTrackingStatus}. A branch created locally has no
+     * upstream configured until its first push, so the count then falls back to
+     * the remote branch itself and, failing that, to the remote default branch —
+     * on a branch the remote has never seen, everything committed since the
+     * default branch is work nobody else has. Returns -1 when the remote is
+     * unknown entirely, which callers treat as "assume there is work".
+     */
+    private int countUnpushedCommits(Repository repo, String branch) throws IOException {
+        BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, branch);
+        if (tracking != null) {
+            return tracking.getAheadCount();
+        }
+
+        ObjectId head = repo.resolve(Constants.HEAD);
+        if (head == null) {
+            return 0;
+        }
+        ObjectId base = repo.resolve(remoteRef(branch));
+        if (base == null) {
+            base = repo.resolve(remoteRef(properties.defaultBranch()));
+        }
+        if (base == null) {
+            return -1;
+        }
+
+        try (RevWalk walk = new RevWalk(repo)) {
+            walk.markStart(walk.parseCommit(head));
+            walk.markUninteresting(walk.parseCommit(base));
+            int ahead = 0;
+            while (walk.next() != null) {
+                ahead++;
+            }
+            return ahead;
+        }
+    }
+
+    private static String remoteRef(String branch) {
+        return Constants.R_REMOTES + Constants.DEFAULT_REMOTE_NAME + "/" + branch;
+    }
+
     private String getHeadCommitInternal(Git git) {
         try {
             ObjectId head = git.getRepository().resolve("HEAD");
@@ -661,9 +750,9 @@ public class GitServiceImpl implements GitService {
                         getHeadCommitInternal(git),
                         branch,
                         List.copyOf(changed),
-                        tracking != null ? tracking.getAheadCount() : 0,
+                        Math.max(countUnpushedCommits(repo, branch), 0),
                         tracking != null ? tracking.getBehindCount() : 0,
-                        tracking != null
+                        hasRemoteBranch(repo, branch)
                 );
             } catch (GitAPIException | IOException e) {
                 throw new GitOperationException("Failed to read workspace status", e);
@@ -733,12 +822,16 @@ public class GitServiceImpl implements GitService {
                 .filter(w -> w.lastAccessedAt().isBefore(cutoff))
                 .forEach(workspace -> {
                     try {
-                        if (hasUnsavedWork(workspace)) {
-                            log.info("Keeping idle workspace {} — it has uncommitted or unpushed work",
-                                    workspace.id());
-                            return;
-                        }
-                        cleanupWorkspace(workspace.userId(), workspace.branchName());
+                        // Check and delete under one lock hold: a save landing between
+                        // the two would otherwise be deleted along with the workspace
+                        withLock(workspace, () -> {
+                            if (hasUnsavedWork(workspace)) {
+                                log.info("Keeping idle workspace {} — it has uncommitted or unpushed work",
+                                        workspace.id());
+                                return;
+                            }
+                            cleanupWorkspace(workspace.userId(), workspace.branchName());
+                        });
                     } catch (Exception e) {
                         log.warn("Failed to cleanup idle workspace: {}", workspace.id(), e);
                     }
@@ -758,25 +851,18 @@ public class GitServiceImpl implements GitService {
         if (git == null) {
             return true;
         }
-        return withLockReturn(workspace, () -> {
-            try {
-                if (!git.status().call().isClean()) {
-                    return true;
-                }
-                Repository repo = git.getRepository();
-                BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, repo.getBranch());
-                if (tracking == null) {
-                    // No upstream: the branch was never pushed, so any commit on it
-                    // exists only here unless it is still the pristine default branch
-                    return repo.resolve(Constants.HEAD) != null
-                            && !workspace.branchName().equals(properties.defaultBranch());
-                }
-                return tracking.getAheadCount() > 0;
-            } catch (GitAPIException | IOException e) {
-                log.warn("Cannot determine workspace state for {}, keeping it", workspace.id(), e);
+        try {
+            if (!git.status().call().isClean()) {
                 return true;
             }
-        });
+            // Anything not on the remote would be destroyed with the workspace;
+            // an unknown remote (-1) counts as work, so the clone is kept
+            Repository repo = git.getRepository();
+            return countUnpushedCommits(repo, repo.getBranch()) != 0;
+        } catch (GitAPIException | IOException e) {
+            log.warn("Cannot determine workspace state for {}, keeping it", workspace.id(), e);
+            return true;
+        }
     }
 
     @Override

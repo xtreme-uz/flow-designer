@@ -204,14 +204,16 @@ public class FlowController {
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
 
-        if (!flowService.flowExists(workspace, name)) {
-            throw new FlowNotFoundException(name, workspace.id());
-        }
+        ThubDeploymentData stored = flowService.getFlow(workspace, name)
+                .orElseThrow(() -> new FlowNotFoundException(name, workspace.id()));
 
         ThubDeploymentData deploymentData = request.deploymentData();
 
-        // Update lastModifiedBy on FlowType
-        var updatedFlowType = deploymentData.flowType().withModification(userId);
+        // Creation audit comes from the stored record, never from the request: the
+        // client rebuilds the flow type from its own canvas state and would blank
+        // it out — or claim someone else wrote the flow
+        var updatedFlowType = withStoredCreationAudit(deploymentData.flowType(), stored.flowType())
+                .withModification(userId);
         ThubDeploymentData updatedData = new ThubDeploymentData(
                 updatedFlowType,
                 deploymentData.flowStatuses(),
@@ -376,6 +378,29 @@ public class FlowController {
         return gitService.getWorkspace(userId, branchName)
                 .orElseThrow(() -> new WorkspaceNotFoundException(
                         WorkspaceInfo.createId(userId, branchName)));
+    }
+
+    /**
+     * Restores createdBy/createdAt from the record already on disk, so an update
+     * cannot rewrite — or erase — who first created the flow.
+     */
+    private ThubFlowType withStoredCreationAudit(ThubFlowType incoming, ThubFlowType stored) {
+        if (stored == null) {
+            return incoming;
+        }
+        return new ThubFlowType(
+                incoming.id(),
+                incoming.initialFlowStatusId(),
+                incoming.finalFlowStatusId(),
+                incoming.description(),
+                incoming.version(),
+                incoming.component(),
+                stored.createdBy(),
+                stored.createdAt(),
+                incoming.lastModifiedBy(),
+                incoming.lastModifiedAt(),
+                incoming.categorization()
+        );
     }
 
     /**
