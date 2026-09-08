@@ -80,12 +80,16 @@ export default function App() {
   }, [hasUnsavedChanges]);
 
   // Node and edge handlers.
-  // Only structural changes count as edits: React Flow also reports selection,
-  // dimension and drag changes, and node positions are recomputed by dagre
-  // rather than stored, so neither belongs in the unsaved-changes flag.
+  // Structural changes count as edits, and so does a finished drag now that
+  // positions are saved with the flow. Selection and the in-flight steps of a
+  // drag change nothing that is stored, so they are ignored.
   const onNodesChange = useCallback(
     (changes) => {
-      if (changes.some((c) => c.type === 'add' || c.type === 'remove' || c.type === 'replace')) {
+      const edited = changes.some((c) =>
+        c.type === 'add' || c.type === 'remove' || c.type === 'replace' ||
+        (c.type === 'position' && c.dragging === false)
+      );
+      if (edited) {
         markAsChanged();
       }
       setNodes((nds) => applyNodeChanges(changes, nds));
@@ -246,10 +250,11 @@ export default function App() {
       const positioned = applyDagreLayout(currentNodes, edges, { direction });
       return positioned;
     });
+    markAsChanged();
     if (reactFlowInstance) {
       setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 50);
     }
-  }, [edges, reactFlowInstance]);
+  }, [edges, reactFlowInstance, markAsChanged]);
 
   // Fetch available statuses
   const fetchStatuses = async () => {
@@ -371,13 +376,16 @@ export default function App() {
         nodes, edges, currentFlowName, existingFlowType, existingAssignments
       );
 
-      if (currentFlowSource === 'main') {
-        // Opened from the main branch: the first save copies it into this workspace
-        await api.createFlow(currentFlowName, deploymentData, branch);
-        setCurrentFlowSource('workspace');
-      } else {
+      // A flow opened from the main branch may or may not already exist in this
+      // workspace — a feature branch cut from main carries all of them. Update
+      // first and create only when it really is not there.
+      try {
         await api.updateFlow(currentFlowName, deploymentData, branch);
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        await api.createFlow(currentFlowName, deploymentData, branch);
       }
+      setCurrentFlowSource('workspace');
       // Positions are the user's arrangement, not THUB data — stored separately.
       // The flow itself is already saved, so a failure here costs the layout only.
       try {

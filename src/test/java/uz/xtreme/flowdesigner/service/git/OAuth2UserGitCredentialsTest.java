@@ -45,6 +45,10 @@ class OAuth2UserGitCredentialsTest {
     }
 
     private OAuth2AuthorizedClientService serviceWithToken(String token) {
+        return serviceWithToken(token, Instant.now().plusSeconds(3600));
+    }
+
+    private OAuth2AuthorizedClientService serviceWithToken(String token, Instant expiresAt) {
         ClientRegistration registration = ClientRegistration.withRegistrationId(REGISTRATION_ID)
                 .clientId("id")
                 .clientSecret("secret")
@@ -57,7 +61,7 @@ class OAuth2UserGitCredentialsTest {
                 .build();
         OAuth2AuthorizedClient client = new OAuth2AuthorizedClient(registration, USERNAME,
                 new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, token,
-                        Instant.now(), Instant.now().plusSeconds(3600)));
+                        Instant.now().minusSeconds(60), expiresAt));
 
         OAuth2AuthorizedClientService service = mock(OAuth2AuthorizedClientService.class);
         when(service.loadAuthorizedClient(REGISTRATION_ID, USERNAME)).thenReturn(client);
@@ -120,6 +124,16 @@ class OAuth2UserGitCredentialsTest {
         authenticateOAuth2User();
         OAuth2AuthorizedClientService empty = mock(OAuth2AuthorizedClientService.class);
         var credentials = new OAuth2UserGitCredentials(properties(true), provider(empty));
+
+        assertTrue(credentials.forCurrentUser().isEmpty());
+    }
+
+    @Test
+    @DisplayName("Falls back when the token has expired, instead of failing the push")
+    void expiredToken() {
+        authenticateOAuth2User();
+        var credentials = new OAuth2UserGitCredentials(properties(true),
+                provider(serviceWithToken("glpat-token", Instant.now().minusSeconds(1))));
 
         assertTrue(credentials.forCurrentUser().isEmpty());
     }

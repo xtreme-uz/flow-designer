@@ -82,6 +82,8 @@ public class GitServiceImpl implements GitService {
     private final ConcurrentHashMap<String, WorkspaceInfo> workspaces = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Git> gitInstances = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Instant> lastFetchAt = new ConcurrentHashMap<>();
+    /** One clone, one index: two pulls at once collide on .git/index.lock. */
+    private final ReentrantLock mainRepoLock = new ReentrantLock();
 
     private final UserGitCredentials userGitCredentials;
 
@@ -203,6 +205,9 @@ public class GitServiceImpl implements GitService {
             return;
         }
 
+        // Requests pull the main repo before every read, and a scheduled refresh
+        // does the same; without this they can run at the same time
+        mainRepoLock.lock();
         try {
             // Check if repo has any commits - skip pull for empty repos
             ObjectId head = mainRepo.getRepository().resolve("HEAD");
@@ -228,6 +233,8 @@ public class GitServiceImpl implements GitService {
             throw new GitAuthenticationException("Failed to pull main repository", e);
         } catch (GitAPIException | IOException e) {
             throw new GitOperationException("Failed to pull main repository", e);
+        } finally {
+            mainRepoLock.unlock();
         }
     }
 

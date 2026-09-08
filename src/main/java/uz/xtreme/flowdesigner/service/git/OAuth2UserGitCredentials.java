@@ -11,8 +11,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.core.OAuth2AccessToken;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 
 /**
@@ -32,6 +35,7 @@ public class OAuth2UserGitCredentials implements UserGitCredentials {
 
     /** GitLab and GitHub both accept an OAuth2 token as the password under a fixed username. */
     private static final String OAUTH_USERNAME = "oauth2";
+    private static final Duration EXPIRY_MARGIN = Duration.ofSeconds(30);
 
     private final GitProperties gitProperties;
     private final ObjectProvider<OAuth2AuthorizedClientService> authorizedClientService;
@@ -43,6 +47,12 @@ public class OAuth2UserGitCredentials implements UserGitCredentials {
         if (gitProperties.useUserCredentials()) {
             log.info("Git operations will use each user's own OAuth2 token where one is available");
         }
+    }
+
+    /** Treats a token about to expire as expired: the push may outlive the margin. */
+    private static boolean isExpired(OAuth2AccessToken accessToken) {
+        Instant expiresAt = accessToken.getExpiresAt();
+        return expiresAt != null && expiresAt.isBefore(Instant.now().plus(EXPIRY_MARGIN));
     }
 
     @Override
@@ -66,6 +76,14 @@ public class OAuth2UserGitCredentials implements UserGitCredentials {
                 service.loadAuthorizedClient(token.getAuthorizedClientRegistrationId(), token.getName());
         if (client == null || client.getAccessToken() == null) {
             log.debug("No stored OAuth2 token for '{}', falling back to the service credentials", token.getName());
+            return Optional.empty();
+        }
+
+        if (isExpired(client.getAccessToken())) {
+            // Falling back keeps the operation working on the service account;
+            // handing over a dead token would fail it outright
+            log.debug("OAuth2 token for '{}' has expired, falling back to the service credentials",
+                    token.getName());
             return Optional.empty();
         }
 

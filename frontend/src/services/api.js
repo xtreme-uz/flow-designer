@@ -9,10 +9,11 @@
 const API_BASE = '/api';
 
 class ApiError extends Error {
-  constructor(message, errors = []) {
+  constructor(message, errors = [], status = 0) {
     super(message);
     this.name = 'ApiError';
     this.errors = errors;
+    this.status = status;
   }
 }
 
@@ -24,7 +25,7 @@ async function handleResponse(response) {
     const body = await response.json().catch(() => ({}));
     const message = body.detail || body.message || `HTTP ${response.status}: ${response.statusText}`;
     const errors = Array.isArray(body.errors) ? body.errors : [];
-    throw new ApiError(message, errors);
+    throw new ApiError(message, errors, response.status);
   }
 
   if (response.status === 204) {
