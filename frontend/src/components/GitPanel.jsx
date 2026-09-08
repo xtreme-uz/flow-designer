@@ -14,6 +14,7 @@ export default function GitPanel({ hasUnsavedChanges }) {
   const [isCommitting, setIsCommitting] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   if (isMainBranch) {
     return (
@@ -30,6 +31,19 @@ export default function GitPanel({ hasUnsavedChanges }) {
       </aside>
     );
   }
+
+  // The Commit and Push buttons read the cached status; if a refresh ever fails
+  // the user needs a way to ask for it again rather than being stuck
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await refreshStatus();
+    } catch (err) {
+      toast.error(`Could not read workspace status: ${err.message}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const handleCommit = async (e) => {
     e.preventDefault();
@@ -86,6 +100,14 @@ export default function GitPanel({ hasUnsavedChanges }) {
     <aside className="git-panel">
       <div className="panel-header">
         <h3>🌿 Git Operations</h3>
+        <button
+          className="refresh-btn"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          title="Refresh workspace status"
+        >
+          {isRefreshing ? '⏳' : '⟳'}
+        </button>
       </div>
 
       <div className="panel-body">

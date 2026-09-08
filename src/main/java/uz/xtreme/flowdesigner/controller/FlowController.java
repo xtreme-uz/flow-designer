@@ -186,7 +186,7 @@ public class FlowController {
 
         // Audit fields are the server's to set — never trust what the client sent
         ThubDeploymentData requestData = request.deploymentData();
-        ThubDeploymentData deploymentData = withCreationAudit(requestData, userId);
+        ThubDeploymentData deploymentData = withCreationAudit(requestData, userId, flowTypeId);
         flowService.saveFlow(workspace, flowTypeId, deploymentData);
 
         FlowSummary summary = FlowSummary.from(deploymentData.flowType());
@@ -215,7 +215,7 @@ public class FlowController {
         // Creation audit comes from the stored record, never from the request: the
         // client rebuilds the flow type from its own canvas state and would blank
         // it out — or claim someone else wrote the flow
-        var updatedFlowType = withStoredCreationAudit(deploymentData.flowType(), stored.flowType())
+        var updatedFlowType = withStoredCreationAudit(deploymentData.flowType(), stored.flowType(), name)
                 .withModification(userId);
         ThubDeploymentData updatedData = new ThubDeploymentData(
                 updatedFlowType,
@@ -393,12 +393,14 @@ public class FlowController {
      * Restores createdBy/createdAt from the record already on disk, so an update
      * cannot rewrite — or erase — who first created the flow.
      */
-    private ThubFlowType withStoredCreationAudit(ThubFlowType incoming, ThubFlowType stored) {
+    private ThubFlowType withStoredCreationAudit(ThubFlowType incoming, ThubFlowType stored, String flowTypeId) {
         if (stored == null) {
             return incoming;
         }
         return new ThubFlowType(
-                incoming.id(),
+                // The record is keyed by the flow being saved; a body claiming a
+                // different id would list under a name that then 404s
+                flowTypeId,
                 incoming.initialFlowStatusId(),
                 incoming.finalFlowStatusId(),
                 incoming.description(),
@@ -416,14 +418,15 @@ public class FlowController {
      * Stamps createdBy/createdAt (and the matching modification fields) from the
      * authenticated user, replacing whatever the client sent.
      */
-    private ThubDeploymentData withCreationAudit(ThubDeploymentData data, String userId) {
+    private ThubDeploymentData withCreationAudit(ThubDeploymentData data, String userId, String flowTypeId) {
         if (data == null || data.flowType() == null) {
             return data;
         }
         var flowType = data.flowType();
         Instant now = Instant.now();
         var stamped = new ThubFlowType(
-                flowType.id(),
+                // Keyed by the requested flow name, never by what the body claims
+                flowTypeId,
                 flowType.initialFlowStatusId(),
                 flowType.finalFlowStatusId(),
                 flowType.description(),

@@ -197,6 +197,39 @@ class GitServiceImplTest {
     }
 
     @Nested
+    @DisplayName("Pull Conflict Tests")
+    class PullConflictTests {
+
+        @Test
+        @DisplayName("A conflicting pull leaves no half-merged tree behind")
+        void conflictingPullIsAborted() throws IOException, GitAPIException {
+            WorkspaceInfo first = gitService.getOrCreateWorkspace("puller-one", "master");
+            WorkspaceInfo second = gitService.getOrCreateWorkspace("puller-two", "master");
+
+            // Both workspaces change the same file, and the first one gets there first
+            Files.writeString(first.path().resolve("shared.json"), "{\"owner\": \"one\"}");
+            gitService.add(first, ".");
+            gitService.commit(first, "One", AuditInfo.of("one", "One", "one@example.com"), null);
+            gitService.push(first);
+
+            Files.writeString(second.path().resolve("shared.json"), "{\"owner\": \"two\"}");
+            gitService.add(second, ".");
+            gitService.commit(second, "Two", AuditInfo.of("two", "Two", "two@example.com"), null);
+            String headBefore = gitService.getHeadCommit(second);
+
+            assertThrows(GitSyncConflictException.class, () -> gitService.pull(second));
+
+            assertEquals(headBefore, gitService.getHeadCommit(second),
+                    "the workspace is back where it started");
+            assertTrue(gitService.getStatus(second).clean(),
+                    "no conflict markers are left staged or in the working tree");
+            try (Git git = Git.open(second.path().toFile())) {
+                assertNull(git.getRepository().readMergeHeads(), "the merge is not still in progress");
+            }
+        }
+    }
+
+    @Nested
     @DisplayName("Workspace Restore Tests")
     class WorkspaceRestoreTests {
 

@@ -9,6 +9,7 @@ import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.TransportException;
@@ -63,6 +64,7 @@ public class GitServiceImpl implements GitService {
     private static final String GIT_DIR = ".git";
     private static final String WORKSPACE_METADATA_FILE = "flowdesigner-workspace.properties";
     private static final String THUB_DIR = "THUB";
+    private static final int FETCH_TIMEOUT_SECONDS = 10;
 
     private final GitProperties properties;
     private final ConcurrentHashMap<String, ReentrantLock> workspaceLocks = new ConcurrentHashMap<>();
@@ -459,17 +461,23 @@ public class GitServiceImpl implements GitService {
         withLock(workspace, () -> {
             Git git = getGitInstance(workspace);
             try {
+                ObjectId headBeforePull = git.getRepository().resolve(Constants.HEAD);
                 var pullCommand = git.pull();
                 if (credentialsProvider != null) {
                     pullCommand.setCredentialsProvider(credentialsProvider);
                 }
                 // JGit reports a failed merge in the result, it does not throw
                 PullResult result = pullCommand.call();
+                if (!result.isSuccessful()) {
+                    // Leave no half-merged tree behind: conflict markers and
+                    // MERGE_HEAD would be swept into the next commit and pushed
+                    abortMerge(git, headBeforePull, workspace);
+                }
                 verifyPullResult(result, workspace);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to pull to workspace", e);
-            } catch (GitAPIException e) {
+            } catch (GitAPIException | IOException e) {
                 throw new GitOperationException("Failed to pull to workspace: " + workspace.id(), e);
             }
         });
@@ -625,6 +633,28 @@ public class GitServiceImpl implements GitService {
     }
 
     /**
+     * Puts the working tree back where it was before a failed pull. Without this
+     * the workspace keeps the conflicted files and MERGE_HEAD, and the user's next
+     * commit records the conflict markers as a merge commit.
+     */
+    private void abortMerge(Git git, ObjectId headBeforePull, WorkspaceInfo workspace) {
+        if (headBeforePull == null) {
+            return;
+        }
+        try {
+            git.reset()
+                    .setMode(ResetCommand.ResetType.HARD)
+                    .setRef(headBeforePull.getName())
+                    .call();
+            log.info("Reverted workspace {} to {} after a failed pull",
+                    workspace.id(), headBeforePull.getName());
+        } catch (GitAPIException e) {
+            log.error("Failed to revert workspace {} after a failed pull — it may hold conflict markers",
+                    workspace.id(), e);
+        }
+    }
+
+    /**
      * Fails the pull when the merge did not complete. As with push, JGit reports
      * a conflicting merge in the result instead of throwing, which would leave
      * the workspace holding conflict markers while the caller reports success.
@@ -684,6 +714,25 @@ public class GitServiceImpl implements GitService {
         } catch (IOException e) {
             // Only the ahead/behind reporting degrades; the push itself succeeded
             log.warn("Failed to record upstream branch configuration", e);
+        }
+    }
+
+    /**
+     * Updates the remote-tracking refs, tolerating an unreachable remote: the
+     * status is still useful offline, only the behind count goes stale.
+     */
+    private void fetchQuietly(Git git, WorkspaceInfo workspace) {
+        try {
+            var fetchCommand = git.fetch()
+                    // Status runs under the workspace lock, so an unresponsive
+                    // remote must not be able to block saves indefinitely
+                    .setTimeout(FETCH_TIMEOUT_SECONDS);
+            if (credentialsProvider != null) {
+                fetchCommand.setCredentialsProvider(credentialsProvider);
+            }
+            fetchCommand.call();
+        } catch (GitAPIException e) {
+            log.debug("Could not refresh remote refs for workspace {}: {}", workspace.id(), e.getMessage());
         }
     }
 
@@ -756,6 +805,11 @@ public class GitServiceImpl implements GitService {
             Git git = getGitInstance(workspace);
             updateLastAccessed(workspace);
             try {
+                // Without a fetch the remote-tracking refs never move, so the
+                // behind count would always read zero and a user would only learn
+                // of a teammate's push when their own push is rejected
+                fetchQuietly(git, workspace);
+
                 Status status = git.status().call();
                 // Everything the user could still lose, in one sorted list
                 Set<String> changed = new TreeSet<>();

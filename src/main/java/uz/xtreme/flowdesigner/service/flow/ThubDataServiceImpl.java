@@ -36,7 +36,7 @@ public class ThubDataServiceImpl implements ThubDataService {
 
     static final String THUB_DIR = "THUB";
 
-    private static final String TEMP_SUFFIX = ".tmp";
+    private static final String TEMP_SUFFIX = "-data.json.tmp";
 
     private final ObjectMapper objectMapper;
 
@@ -153,7 +153,13 @@ public class ThubDataServiceImpl implements ThubDataService {
     }
 
     private static String tempFileName(String tableName) {
-        return "." + tableName + "-data.json" + TEMP_SUFFIX;
+        return "." + tableName + TEMP_SUFFIX;
+    }
+
+    /** Matches only the names this class writes, never a file the user put there. */
+    private static boolean isOwnTempFile(Path path) {
+        String name = path.getFileName().toString();
+        return name.startsWith(".") && name.endsWith(TEMP_SUFFIX);
     }
 
     /**
@@ -163,7 +169,7 @@ public class ThubDataServiceImpl implements ThubDataService {
      */
     private void deleteStaleTempFiles(Path thubDir) {
         try (var entries = Files.list(thubDir)) {
-            for (Path entry : entries.filter(p -> p.getFileName().toString().endsWith(TEMP_SUFFIX)).toList()) {
+            for (Path entry : entries.filter(ThubDataServiceImpl::isOwnTempFile).toList()) {
                 Files.deleteIfExists(entry);
                 log.warn("Removed leftover THUB temp file: {}", entry.getFileName());
             }

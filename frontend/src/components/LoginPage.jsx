@@ -4,8 +4,8 @@ import './LoginPage.css';
 export default function LoginPage() {
   const { login } = useAuth();
 
-  // Set by the backend when the account is not on the allowlist
-  const loginDenied = new URLSearchParams(window.location.search).get('error') === 'login_denied';
+  // Set by the backend: a rejected account, or any other OAuth2 failure
+  const loginError = new URLSearchParams(window.location.search).get('error');
 
   return (
     <div className="login-page">
@@ -15,9 +15,14 @@ export default function LoginPage() {
           <p>Visual payment flow editor</p>
         </div>
         <div className="login-body">
-          {loginDenied && (
+          {loginError === 'login_denied' && (
             <p className="login-error" role="alert">
               This account does not have access to Flow Designer. Ask an administrator to add it.
+            </p>
+          )}
+          {loginError === 'login_failed' && (
+            <p className="login-error" role="alert">
+              Sign-in did not complete. Try again — if it keeps failing, the GitLab connection needs checking.
             </p>
           )}
           <button className="login-btn login-btn-gitlab" onClick={login}>
