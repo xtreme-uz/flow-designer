@@ -146,7 +146,7 @@ java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
 ### Run Tests
 
 ```bash
-# All tests — 165 backend (JUnit) + 38 frontend (vitest, jsdom)
+# All tests — 169 backend (JUnit) + 38 frontend (vitest, jsdom)
 cd flow-designer
 mvn test
 

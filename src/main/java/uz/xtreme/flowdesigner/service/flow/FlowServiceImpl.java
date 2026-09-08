@@ -67,6 +67,13 @@ public class FlowServiceImpl implements FlowService {
     }
 
     @Override
+    public boolean flowExistsInMain(String flowTypeId) {
+        gitService.pullMainRepo();
+        Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(Path.of(gitProperties.mainRepoPath()));
+        return flowTypes.containsKey(ThubDataService.flowTypeKey(flowTypeId));
+    }
+
+    @Override
     public List<ThubFlowStatus> getAllStatusesFromMain() {
         gitService.pullMainRepo();
         Path mainRepoPath = Path.of(gitProperties.mainRepoPath());

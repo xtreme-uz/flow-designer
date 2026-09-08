@@ -5,6 +5,7 @@ import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.FlowService;
+import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
@@ -135,6 +136,26 @@ class FlowControllerTest {
             when(flowService.getFlowFromMain(FLOW_NAME)).thenReturn(Optional.empty());
 
             assertThrows(FlowNotFoundException.class, () -> controller.getFlow(FLOW_NAME));
+        }
+
+        @Test
+        @DisplayName("GET /api/flows/{name}/layout - returns the stored canvas")
+        void getFlowLayout() {
+            FlowLayout layout = new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 10, 20)));
+            when(flowService.flowExistsInMain(FLOW_NAME)).thenReturn(true);
+            when(flowService.getLayoutFromMain(FLOW_NAME)).thenReturn(layout);
+
+            assertEquals(layout, controller.getFlowLayout(FLOW_NAME));
+            // The existence check must not re-read the whole flow
+            verify(flowService, never()).getFlowFromMain(FLOW_NAME);
+        }
+
+        @Test
+        @DisplayName("GET /api/flows/{name}/layout - throws when the flow is unknown")
+        void getFlowLayoutNotFound() {
+            when(flowService.flowExistsInMain(FLOW_NAME)).thenReturn(false);
+
+            assertThrows(FlowNotFoundException.class, () -> controller.getFlowLayout(FLOW_NAME));
         }
     }
 
@@ -363,6 +384,25 @@ class FlowControllerTest {
             assertThrows(FlowNotFoundException.class, () ->
                     controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
                             new FlowController.UpdateFlowRequest(createValidDeploymentData(FLOW_NAME))));
+        }
+
+        @Test
+        @DisplayName("GET /api/workspaces/flows/{name}/layout - throws when the flow is unknown")
+        void getWorkspaceFlowLayoutNotFound() {
+            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
+
+            assertThrows(FlowNotFoundException.class, () ->
+                    controller.getWorkspaceFlowLayout(USER_ID, BRANCH, FLOW_NAME));
+        }
+
+        @Test
+        @DisplayName("PUT /api/workspaces/flows/{name}/layout - saves the canvas")
+        void saveWorkspaceFlowLayout() {
+            FlowLayout layout = new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 10, 20)));
+
+            assertEquals(layout, controller.saveWorkspaceFlowLayout(USER_ID, BRANCH, FLOW_NAME, layout));
+
+            verify(flowService).saveLayout(workspace, FLOW_NAME, layout);
         }
 
         @Test

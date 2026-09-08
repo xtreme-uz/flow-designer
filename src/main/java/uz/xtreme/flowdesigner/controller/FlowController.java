@@ -90,8 +90,10 @@ public class FlowController {
     @GetMapping("/flows/{name}/layout")
     public FlowLayout getFlowLayout(@PathVariable String name) {
         log.debug("Getting layout for flow '{}' from main branch", name);
-        // An unknown flow answers the same way here as it does for the flow itself
-        if (flowService.getFlowFromMain(name).isEmpty()) {
+        // An unknown flow answers the same way here as it does for the flow itself.
+        // The canvas asks for both at once, so this check reads the flow type file
+        // only rather than the whole flow a second time.
+        if (!flowService.flowExistsInMain(name)) {
             throw new FlowNotFoundException(name, "main");
         }
         return flowService.getLayoutFromMain(name);

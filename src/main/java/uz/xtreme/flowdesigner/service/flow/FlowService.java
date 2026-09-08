@@ -24,6 +24,12 @@ public interface FlowService {
 
     List<ThubFlowStatus> getAllStatusesFromMain();
 
+    /**
+     * Whether the main branch has this flow. Reads the flow type file only, so it
+     * costs a fraction of {@link #getFlowFromMain(String)} when nothing else is needed.
+     */
+    boolean flowExistsInMain(String flowTypeId);
+
     // ==================== Read Operations (Workspace) ====================
 
     List<FlowSummary> listFlows(WorkspaceInfo workspace);
