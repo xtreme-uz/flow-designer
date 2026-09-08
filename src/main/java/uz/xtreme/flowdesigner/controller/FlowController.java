@@ -8,6 +8,7 @@ import uz.xtreme.flowdesigner.service.flow.FlowService;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubDeploymentData;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowStatus;
+import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowType;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
 import uz.xtreme.flowdesigner.service.git.GitService;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
@@ -17,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -183,7 +185,9 @@ public class FlowController {
             throw new FlowValidationException("Flow with name '" + flowTypeId + "' already exists");
         }
 
-        ThubDeploymentData deploymentData = request.deploymentData();
+        // Audit fields are the server's to set — never trust what the client sent
+        ThubDeploymentData requestData = request.deploymentData();
+        ThubDeploymentData deploymentData = withCreationAudit(requestData, userId);
         flowService.saveFlow(workspace, flowTypeId, deploymentData);
 
         FlowSummary summary = FlowSummary.from(deploymentData.flowType());
@@ -282,10 +286,12 @@ public class FlowController {
         String authorEmail = (userEmail != null && !userEmail.isBlank()) ? userEmail : userId + "@flowdesigner.local";
         AuditInfo auditInfo = AuditInfo.of(userId, authorName, authorEmail);
 
-        // Stage all changes in THUB directory
-        gitService.add(workspace, "THUB/");
-
-        String commitHash = gitService.commit(workspace, request.message(), auditInfo, null);
+        // Stage and commit as one unit so a concurrent save cannot slip into the
+        // staged tree between the two steps
+        String commitHash = gitService.withWorkspaceLock(workspace, () -> {
+            gitService.add(workspace, "THUB/");
+            return gitService.commit(workspace, request.message(), auditInfo, request.expectedVersion());
+        });
         return new CommitResponse(commitHash, request.message());
     }
 
@@ -368,6 +374,38 @@ public class FlowController {
                         WorkspaceInfo.createId(userId, branchName)));
     }
 
+    /**
+     * Stamps createdBy/createdAt (and the matching modification fields) from the
+     * authenticated user, replacing whatever the client sent.
+     */
+    private ThubDeploymentData withCreationAudit(ThubDeploymentData data, String userId) {
+        if (data == null || data.flowType() == null) {
+            return data;
+        }
+        var flowType = data.flowType();
+        Instant now = Instant.now();
+        var stamped = new ThubFlowType(
+                flowType.id(),
+                flowType.initialFlowStatusId(),
+                flowType.finalFlowStatusId(),
+                flowType.description(),
+                flowType.version(),
+                flowType.component(),
+                userId,
+                now,
+                userId,
+                now,
+                flowType.categorization()
+        );
+        return new ThubDeploymentData(
+                stamped,
+                data.flowStatuses(),
+                data.flowStatusActions(),
+                data.flowStatusTransitions(),
+                data.flowAssignments()
+        );
+    }
+
     private List<String> validateBranchName(String branchName) {
         if (branchName == null || branchName.isBlank()) {
             return List.of("Branch name cannot be empty");
@@ -393,7 +431,11 @@ public class FlowController {
 
     public record RenameFlowRequest(String newName) {}
 
-    public record CommitRequest(String message) {}
+    /**
+     * @param expectedVersion HEAD the client last saw; when present the commit is
+     *                        rejected with 409 if the workspace moved on since.
+     */
+    public record CommitRequest(String message, String expectedVersion) {}
 
     public record ValidationResponse(boolean valid, List<String> errors) {}
 

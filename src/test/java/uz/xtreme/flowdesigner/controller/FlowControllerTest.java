@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -25,6 +26,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -59,6 +61,10 @@ class FlowControllerTest {
                 Instant.now(),
                 Instant.now()
         );
+
+        // Stage+commit runs inside the workspace lock; the mock must execute it
+        lenient().doAnswer(invocation -> invocation.getArgument(1, Supplier.class).get())
+                .when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Supplier.class));
     }
 
     // ==================== Test Data Helpers ====================
@@ -265,7 +271,35 @@ class FlowControllerTest {
             assertEquals(HttpStatus.CREATED, response.getStatusCode());
             assertNotNull(response.getBody());
             assertEquals(FLOW_NAME, response.getBody().flowTypeId());
-            verify(flowService).saveFlow(workspace, FLOW_NAME, deploymentData);
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            assertEquals(deploymentData.flowStatuses(), saved.getValue().flowStatuses());
+            assertEquals(deploymentData.flowStatusTransitions(), saved.getValue().flowStatusTransitions());
+        }
+
+        @Test
+        @DisplayName("POST /api/workspaces/flows - stamps audit fields from the authenticated user")
+        void createFlowStampsAudit() {
+            ThubDeploymentData spoofed = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "someone-else", Instant.parse("2000-01-01T00:00:00Z"),
+                            "someone-else", Instant.parse("2000-01-01T00:00:00Z"),
+                            Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
+
+            controller.createFlow(USER_ID, BRANCH,
+                    new FlowController.CreateFlowRequest(FLOW_NAME, spoofed));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            ThubFlowType stored = saved.getValue().flowType();
+            assertEquals(USER_ID, stored.createdBy());
+            assertEquals(USER_ID, stored.lastModifiedBy());
+            assertTrue(stored.createdAt().isAfter(Instant.parse("2020-01-01T00:00:00Z")));
         }
 
         @Test
@@ -425,7 +459,7 @@ class FlowControllerTest {
 
             FlowController.CommitResponse result = controller.commitChanges(
                     USER_ID, "Test User", "test@example.com", BRANCH,
-                    new FlowController.CommitRequest(message)
+                    new FlowController.CommitRequest(message, null)
             );
 
             assertEquals(commitHash, result.commitHash());

@@ -9,8 +9,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -125,7 +127,22 @@ public class ThubDataServiceImpl implements ThubDataService {
             }
             Path dataFile = thubDir.resolve(tableName + "-data.json");
             DataFileWrapper<T> wrapper = new DataFileWrapper<>(new TreeMap<>(data != null ? data : Map.of()));
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(dataFile.toFile(), wrapper);
+
+            // Write beside the target and move into place, so a failure mid-write
+            // leaves the previous file intact instead of a truncated one. The temp
+            // name is fixed per table: a file orphaned by a crash is overwritten by
+            // the next save rather than accumulating in the working tree.
+            Path tempFile = thubDir.resolve("." + tableName + "-data.json.tmp");
+            try {
+                objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), wrapper);
+                try {
+                    Files.move(tempFile, dataFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tempFile, dataFile, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(tempFile);
+            }
         } catch (IOException e) {
             throw new FlowStorageException("Failed to write THUB data file: " + tableName, e);
         }

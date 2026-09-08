@@ -50,6 +50,21 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(GitSyncConflictException.class)
+    public ProblemDetail handleSyncConflict(GitSyncConflictException ex) {
+        log.warn("Git {} conflict: {}", ex.getOperation(), ex.getMessage());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT,
+                ex.getMessage());
+        problem.setTitle("Git Sync Conflict");
+        problem.setType(URI.create("https://api.flowdesigner.com/errors/git-sync-conflict"));
+        problem.setProperty("operation", ex.getOperation());
+        problem.setProperty("timestamp", Instant.now());
+
+        return problem;
+    }
+
     @ExceptionHandler(GitAuthenticationException.class)
     public ProblemDetail handleAuthenticationFailure(GitAuthenticationException ex) {
         log.error("Git authentication failed: {}", ex.getMessage());

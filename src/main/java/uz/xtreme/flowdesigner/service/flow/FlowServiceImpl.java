@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
@@ -87,6 +88,12 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public void saveFlow(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
+        // Five files are read and rewritten here; without the workspace lock a
+        // concurrent save on the same workspace interleaves and loses records
+        gitService.withWorkspaceLock(workspace, () -> saveFlowLocked(workspace, flowTypeId, deploymentData));
+    }
+
+    private void saveFlowLocked(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
         List<String> nameErrors = validateFlowName(flowTypeId);
         if (!nameErrors.isEmpty()) {
             throw new FlowValidationException(nameErrors);
@@ -113,7 +120,7 @@ public class FlowServiceImpl implements FlowService {
 
         // Replace FlowStatusActions for this flowTypeId
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId);
         for (ThubFlowStatusAction action : deploymentData.flowStatusActions()) {
             String key = ThubDataService.flowStatusActionKey(flowTypeId, action.flowStatusId());
             actions.put(key, action);
@@ -122,7 +129,7 @@ public class FlowServiceImpl implements FlowService {
 
         // Replace FlowStatusTransitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId);
         for (ThubFlowStatusTransition transition : deploymentData.flowStatusTransitions()) {
             String key = ThubDataService.flowStatusTransitionKey(
                     flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId());
@@ -132,7 +139,7 @@ public class FlowServiceImpl implements FlowService {
 
         // Replace FlowAssignments for this flowTypeId
         Map<String, ThubFlowAssignment> assignments = thubDataService.readFlowAssignments(basePath);
-        removeByFlowTypeId(assignments, flowTypeId);
+        removeByFlowTypeId(assignments, flowTypeId, ThubFlowAssignment::flowTypeId);
         for (ThubFlowAssignment assignment : deploymentData.flowAssignments()) {
             String key = ThubDataService.flowAssignmentKey(assignment.id());
             assignments.put(key, assignment);
@@ -144,6 +151,10 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public boolean deleteFlow(WorkspaceInfo workspace, String flowTypeId) {
+        return gitService.withWorkspaceLock(workspace, () -> deleteFlowLocked(workspace, flowTypeId));
+    }
+
+    private boolean deleteFlowLocked(WorkspaceInfo workspace, String flowTypeId) {
         Path basePath = workspace.path();
         String flowTypeKey = ThubDataService.flowTypeKey(flowTypeId);
 
@@ -158,17 +169,17 @@ public class FlowServiceImpl implements FlowService {
 
         // Remove Actions for this flowTypeId
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId);
         thubDataService.writeFlowStatusActions(basePath, actions);
 
         // Remove Transitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId);
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
 
         // Remove Assignments for this flowTypeId
         Map<String, ThubFlowAssignment> assignments = thubDataService.readFlowAssignments(basePath);
-        removeByFlowTypeId(assignments, flowTypeId);
+        removeByFlowTypeId(assignments, flowTypeId, ThubFlowAssignment::flowTypeId);
         thubDataService.writeFlowAssignments(basePath, assignments);
 
         // Note: FlowStatuses are SHARED and NOT removed (they may be used by other flows)
@@ -179,6 +190,11 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public void renameFlow(WorkspaceInfo workspace, String oldFlowTypeId, String newFlowTypeId) {
+        // Delete + re-create must be atomic against other writers on this workspace
+        gitService.withWorkspaceLock(workspace, () -> renameFlowLocked(workspace, oldFlowTypeId, newFlowTypeId));
+    }
+
+    private void renameFlowLocked(WorkspaceInfo workspace, String oldFlowTypeId, String newFlowTypeId) {
         List<String> nameErrors = validateFlowName(newFlowTypeId);
         if (!nameErrors.isEmpty()) {
             throw new FlowValidationException(nameErrors);
@@ -397,13 +413,18 @@ public class FlowServiceImpl implements FlowService {
     }
 
     /**
-     * Removes all entries from the map whose R_ key starts with the flowTypeId prefix.
-     * Works for Actions (R_{flowTypeId}_{statusId}),
-     * Transitions (R_{flowTypeId}_{statusId}_{nextStatusId}),
-     * and Assignments (checked by flowTypeId field).
+     * Removes every record owned by the given flow, matching on the record's own
+     * {@code flowtypeid} field.
+     *
+     * <p>Matching on the R_ key prefix instead would delete records of a different
+     * flow whose name happens to extend this one: flow names may contain '_', so
+     * the key {@code R_payment_reversal_ACCEPTED} (flow "payment_reversal") starts
+     * with the prefix {@code R_payment_} of the flow "payment". The field is
+     * unambiguous, and it also covers FlowAssignment, whose key
+     * ({@code R_{assignmentId}}) carries no flow name at all.
      */
-    private void removeByFlowTypeId(Map<String, ?> map, String flowTypeId) {
-        String prefix = "R_" + flowTypeId + "_";
-        map.keySet().removeIf(key -> key.startsWith(prefix) || key.equals("R_" + flowTypeId));
+    private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
+                                               Function<T, String> flowTypeIdExtractor) {
+        map.values().removeIf(record -> flowTypeId.equals(flowTypeIdExtractor.apply(record)));
     }
 }

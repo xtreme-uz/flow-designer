@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.git;
 import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.GitAuthenticationException;
 import uz.xtreme.flowdesigner.exception.GitOperationException;
+import uz.xtreme.flowdesigner.exception.GitSyncConflictException;
 import uz.xtreme.flowdesigner.exception.GitVersionConflictException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import jakarta.annotation.PostConstruct;
@@ -10,10 +11,17 @@ import jakarta.annotation.PreDestroy;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.TransportException;
+import org.eclipse.jgit.api.MergeResult;
+import org.eclipse.jgit.api.PullResult;
+import org.eclipse.jgit.lib.BranchTrackingStatus;
+import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.RemoteRefUpdate;
 import org.eclipse.jgit.transport.SshSessionFactory;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.eclipse.jgit.transport.sshd.SshdSessionFactoryBuilder;
@@ -29,9 +37,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
@@ -43,6 +53,10 @@ import java.util.stream.Stream;
 public class GitServiceImpl implements GitService {
 
     private static final Logger log = LoggerFactory.getLogger(GitServiceImpl.class);
+
+    private static final String GIT_DIR = ".git";
+    private static final String WORKSPACE_METADATA_FILE = "flowdesigner-workspace.properties";
+    private static final String THUB_DIR = "THUB";
 
     private final GitProperties properties;
     private final ConcurrentHashMap<String, ReentrantLock> workspaceLocks = new ConcurrentHashMap<>();
@@ -102,7 +116,7 @@ public class GitServiceImpl implements GitService {
         try {
             Files.createDirectories(mainPath);
 
-            if (Files.exists(mainPath.resolve(".git"))) {
+            if (Files.exists(mainPath.resolve(GIT_DIR))) {
                 log.info("Opening existing main repository at {}", mainPath);
                 mainRepo = Git.open(mainPath.toFile());
                 // Verify branch matches configured default, re-clone if mismatched
@@ -161,8 +175,13 @@ public class GitServiceImpl implements GitService {
             if (credentialsProvider != null) {
                 pullCommand.setCredentialsProvider(credentialsProvider);
             }
-            pullCommand.call();
-            log.debug("Main repository updated successfully");
+            PullResult result = pullCommand.call();
+            if (!result.isSuccessful()) {
+                // Nothing writes to the main repo, so this means it was tampered with locally
+                log.warn("Main repository pull did not complete cleanly: {}", result);
+            } else {
+                log.debug("Main repository updated successfully");
+            }
         } catch (TransportException e) {
             throw new GitAuthenticationException("Failed to pull main repository", e);
         } catch (GitAPIException | IOException e) {
@@ -179,43 +198,109 @@ public class GitServiceImpl implements GitService {
         log.info("Restoring existing workspaces from {}", workspacesPath);
         try (Stream<Path> paths = Files.list(workspacesPath)) {
             paths.filter(Files::isDirectory)
-                    .filter(p -> Files.exists(p.resolve(".git")))
+                    .filter(p -> Files.exists(p.resolve(GIT_DIR)))
                     .forEach(this::restoreWorkspace);
         } catch (IOException e) {
             log.warn("Failed to restore workspaces", e);
         }
     }
 
+    /**
+     * Rebuilds the in-memory workspace registry after a restart.
+     *
+     * <p>The directory name cannot be split back into user and branch: both may
+     * contain '-', and '/' in a branch is flattened to '_' on the way in, so
+     * "alisher-feature_TASK-123-cleanup" has no unambiguous split point. The
+     * branch is therefore read from the repository itself and the user from a
+     * metadata file kept inside .git (never part of the working tree, so it can
+     * never be committed).
+     */
     private void restoreWorkspace(Path workspacePath) {
-        String dirName = workspacePath.getFileName().toString();
-        int lastDash = dirName.lastIndexOf('-');
-        if (lastDash <= 0) {
-            log.warn("Cannot parse workspace directory name: {}", dirName);
-            return;
-        }
-
-        String userId = dirName.substring(0, lastDash);
-        String branchName = dirName.substring(lastDash + 1).replace("_", "/");
-
+        Git git = null;
         try {
-            Git git = Git.open(workspacePath.toFile());
-            String workspaceId = WorkspaceInfo.createId(userId, branchName);
+            git = Git.open(workspacePath.toFile());
+            String branchName = git.getRepository().getBranch();
+            if (branchName == null || branchName.isBlank()) {
+                log.warn("Cannot determine branch for workspace at {}, skipping", workspacePath);
+                git.close();
+                return;
+            }
 
+            String userId = readWorkspaceUserId(workspacePath)
+                    .orElseGet(() -> deriveUserIdFromDirName(workspacePath, branchName));
+            if (userId == null) {
+                log.warn("Cannot determine owner for workspace at {}, skipping", workspacePath);
+                git.close();
+                return;
+            }
+
+            String workspaceId = WorkspaceInfo.createId(userId, branchName);
+            Instant now = Instant.now();
             WorkspaceInfo workspace = new WorkspaceInfo(
                     workspaceId,
                     userId,
                     branchName,
                     workspacePath,
-                    Instant.now(),
-                    Instant.now()
+                    now,
+                    now
             );
 
             gitInstances.put(workspaceId, git);
             workspaces.put(workspaceId, workspace);
             log.info("Restored workspace: {}", workspaceId);
         } catch (IOException e) {
+            if (git != null) {
+                git.close();
+            }
             log.warn("Failed to restore workspace at {}", workspacePath, e);
         }
+    }
+
+    /**
+     * Records who owns a workspace, inside .git so the file is invisible to
+     * {@code git status} and can never end up in a commit.
+     */
+    private void writeWorkspaceMetadata(Path workspacePath, String userId, String branchName) {
+        Properties props = new Properties();
+        props.setProperty("userId", userId);
+        props.setProperty("branchName", branchName);
+        Path metadataFile = workspacePath.resolve(GIT_DIR).resolve(WORKSPACE_METADATA_FILE);
+        try (var out = Files.newOutputStream(metadataFile)) {
+            props.store(out, "Flow Designer workspace metadata");
+        } catch (IOException e) {
+            // The workspace still works; only restore-after-restart degrades
+            log.warn("Failed to write workspace metadata at {}", metadataFile, e);
+        }
+    }
+
+    private Optional<String> readWorkspaceUserId(Path workspacePath) {
+        Path metadataFile = workspacePath.resolve(GIT_DIR).resolve(WORKSPACE_METADATA_FILE);
+        if (!Files.exists(metadataFile)) {
+            return Optional.empty();
+        }
+        Properties props = new Properties();
+        try (var in = Files.newInputStream(metadataFile)) {
+            props.load(in);
+        } catch (IOException e) {
+            log.warn("Failed to read workspace metadata at {}", metadataFile, e);
+            return Optional.empty();
+        }
+        String userId = props.getProperty("userId");
+        return userId != null && !userId.isBlank() ? Optional.of(userId) : Optional.empty();
+    }
+
+    /**
+     * Fallback for workspaces created before the metadata file existed: the
+     * directory is "{userId}-{sanitized branch}", and the branch is now known,
+     * so the remainder is the user.
+     */
+    private String deriveUserIdFromDirName(Path workspacePath, String branchName) {
+        String dirName = workspacePath.getFileName().toString();
+        String suffix = "-" + branchName.replace("/", "_");
+        if (dirName.length() > suffix.length() && dirName.endsWith(suffix)) {
+            return dirName.substring(0, dirName.length() - suffix.length());
+        }
+        return null;
     }
 
     @Override
@@ -263,17 +348,22 @@ public class GitServiceImpl implements GitService {
             ObjectId head = git.getRepository().resolve("HEAD");
             if (head == null) {
                 log.info("Empty repository detected for workspace {}, creating initial commit", workspaceId);
-                Path flowsDir = workspacePath.resolve("flows");
-                Files.createDirectories(flowsDir);
-                Files.writeString(flowsDir.resolve(".gitkeep"), "");
-                git.add().addFilepattern("flows/.gitkeep").call();
-                git.commit().setMessage("Initial commit - create flows directory").call();
+                Path thubDir = workspacePath.resolve(THUB_DIR);
+                Files.createDirectories(thubDir);
+                Files.writeString(thubDir.resolve(".gitkeep"), "");
+                git.add().addFilepattern(THUB_DIR + "/.gitkeep").call();
+                git.commit()
+                        .setSign(false)
+                        .setMessage("Initial commit - create THUB directory")
+                        .call();
             }
 
             // If target branch is different from default, try to checkout or create it
             if (!branchName.equals(properties.defaultBranch())) {
                 checkoutOrCreateBranch(git, branchName);
             }
+
+            writeWorkspaceMetadata(workspacePath, userId, branchName);
 
             Instant now = Instant.now();
             WorkspaceInfo workspace = new WorkspaceInfo(
@@ -343,7 +433,9 @@ public class GitServiceImpl implements GitService {
                 if (credentialsProvider != null) {
                     pullCommand.setCredentialsProvider(credentialsProvider);
                 }
-                pullCommand.call();
+                // JGit reports a failed merge in the result, it does not throw
+                PullResult result = pullCommand.call();
+                verifyPullResult(result, workspace);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to pull to workspace", e);
@@ -424,6 +516,9 @@ public class GitServiceImpl implements GitService {
                 String fullMessage = message + auditInfo.toTrailers();
 
                 RevCommit commit = git.commit()
+                        // Never inherit commit.gpgsign from the server user's global
+                        // git config: signing would fail for every user of the app
+                        .setSign(false)
                         .setMessage(fullMessage)
                         .setAuthor(userIdent)
                         .setCommitter(userIdent)  // Set committer to user for full audit trail
@@ -441,14 +536,6 @@ public class GitServiceImpl implements GitService {
     }
 
     @Override
-    @Deprecated
-    public String commit(WorkspaceInfo workspace, String message, String authorName, String authorEmail, String expectedVersion) {
-        // Delegate to new method with minimal audit info
-        AuditInfo auditInfo = AuditInfo.of("unknown", authorName, authorEmail);
-        return commit(workspace, message, auditInfo, expectedVersion);
-    }
-
-    @Override
     public void push(WorkspaceInfo workspace) {
         withLock(workspace, () -> {
             Git git = getGitInstance(workspace);
@@ -457,7 +544,8 @@ public class GitServiceImpl implements GitService {
                 if (credentialsProvider != null) {
                     pushCommand.setCredentialsProvider(credentialsProvider);
                 }
-                pushCommand.call();
+                // A rejected push comes back as a status on the ref update, not as an exception
+                verifyPushResults(pushCommand.call(), workspace);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to push to remote", e);
@@ -474,6 +562,64 @@ public class GitServiceImpl implements GitService {
             updateLastAccessed(workspace);
             return getHeadCommitInternal(git);
         });
+    }
+
+    /**
+     * Fails the push when the remote refused any ref update. JGit reports a
+     * rejection (non-fast-forward, hook, missing permission) as a status on the
+     * ref update and returns normally, so an unchecked push always looks like a
+     * success to the caller.
+     */
+    private void verifyPushResults(Iterable<PushResult> results, WorkspaceInfo workspace) {
+        List<String> rejections = new ArrayList<>();
+        for (PushResult result : results) {
+            for (RemoteRefUpdate update : result.getRemoteUpdates()) {
+                RemoteRefUpdate.Status status = update.getStatus();
+                if (status == RemoteRefUpdate.Status.OK || status == RemoteRefUpdate.Status.UP_TO_DATE) {
+                    continue;
+                }
+                String reason = update.getMessage() != null && !update.getMessage().isBlank()
+                        ? status + " (" + update.getMessage() + ")"
+                        : status.toString();
+                rejections.add(update.getRemoteName() + ": " + reason);
+            }
+        }
+
+        if (!rejections.isEmpty()) {
+            String detail = String.join("; ", rejections);
+            log.warn("Push rejected for workspace {}: {}", workspace.id(), detail);
+            throw new GitSyncConflictException("push",
+                    "Remote rejected the push — pull the latest changes and try again. " + detail);
+        }
+    }
+
+    /**
+     * Fails the pull when the merge did not complete. As with push, JGit reports
+     * a conflicting merge in the result instead of throwing, which would leave
+     * the workspace holding conflict markers while the caller reports success.
+     */
+    private void verifyPullResult(PullResult result, WorkspaceInfo workspace) {
+        if (result.isSuccessful()) {
+            return;
+        }
+
+        StringBuilder detail = new StringBuilder();
+        MergeResult mergeResult = result.getMergeResult();
+        if (mergeResult != null) {
+            detail.append("merge status: ").append(mergeResult.getMergeStatus());
+            if (mergeResult.getConflicts() != null && !mergeResult.getConflicts().isEmpty()) {
+                detail.append(", conflicting files: ")
+                        .append(String.join(", ", mergeResult.getConflicts().keySet()));
+            }
+        } else if (result.getRebaseResult() != null) {
+            detail.append("rebase status: ").append(result.getRebaseResult().getStatus());
+        } else {
+            detail.append("fetch result: ").append(result.getFetchResult());
+        }
+
+        log.warn("Pull failed for workspace {}: {}", workspace.id(), detail);
+        throw new GitSyncConflictException("pull",
+                "Pull did not complete — resolve the conflict in the workspace and try again. " + detail);
     }
 
     private String getHeadCommitInternal(Git git) {
@@ -508,7 +654,9 @@ public class GitServiceImpl implements GitService {
             }
 
             deleteDirectory(workspace.path());
-            workspaceLocks.remove(workspaceId);
+            // The lock stays in the map on purpose: removing it while holding it
+            // lets a concurrent caller create a fresh lock and run alongside the
+            // deletion. One idle lock per user/branch is cheap.
             log.info("Cleaned up workspace: {}", workspaceId);
         } finally {
             if (lock != null) {
@@ -540,11 +688,50 @@ public class GitServiceImpl implements GitService {
                 .filter(w -> w.lastAccessedAt().isBefore(cutoff))
                 .forEach(workspace -> {
                     try {
+                        if (hasUnsavedWork(workspace)) {
+                            log.info("Keeping idle workspace {} — it has uncommitted or unpushed work",
+                                    workspace.id());
+                            return;
+                        }
                         cleanupWorkspace(workspace.userId(), workspace.branchName());
                     } catch (Exception e) {
                         log.warn("Failed to cleanup idle workspace: {}", workspace.id(), e);
                     }
                 });
+    }
+
+    /**
+     * Whether the workspace holds work that only exists on the server: files the
+     * user saved but never committed, or commits never pushed to the remote.
+     * Deleting such a workspace would destroy that work, so idle cleanup skips it.
+     *
+     * <p>Errs on the side of keeping the workspace: anything that cannot be
+     * determined counts as unsaved work.
+     */
+    private boolean hasUnsavedWork(WorkspaceInfo workspace) {
+        Git git = gitInstances.get(workspace.id());
+        if (git == null) {
+            return true;
+        }
+        return withLockReturn(workspace, () -> {
+            try {
+                if (!git.status().call().isClean()) {
+                    return true;
+                }
+                Repository repo = git.getRepository();
+                BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, repo.getBranch());
+                if (tracking == null) {
+                    // No upstream: the branch was never pushed, so any commit on it
+                    // exists only here unless it is still the pristine default branch
+                    return repo.resolve(Constants.HEAD) != null
+                            && !workspace.branchName().equals(properties.defaultBranch());
+                }
+                return tracking.getAheadCount() > 0;
+            } catch (GitAPIException | IOException e) {
+                log.warn("Cannot determine workspace state for {}, keeping it", workspace.id(), e);
+                return true;
+            }
+        });
     }
 
     @Override
@@ -584,6 +771,16 @@ public class GitServiceImpl implements GitService {
 
     private void updateLastAccessed(WorkspaceInfo workspace) {
         workspaces.computeIfPresent(workspace.id(), (k, v) -> v.withLastAccessedAt(Instant.now()));
+    }
+
+    @Override
+    public void withWorkspaceLock(WorkspaceInfo workspace, Runnable action) {
+        withLock(workspace, action);
+    }
+
+    @Override
+    public <T> T withWorkspaceLock(WorkspaceInfo workspace, java.util.function.Supplier<T> action) {
+        return withLockReturn(workspace, action);
     }
 
     private void withLock(WorkspaceInfo workspace, Runnable action) {

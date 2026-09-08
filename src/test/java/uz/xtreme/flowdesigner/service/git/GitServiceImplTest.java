@@ -574,18 +574,6 @@ class GitServiceImplTest {
             }
         }
 
-        @Test
-        @DisplayName("Deprecated commit method should still work")
-        @SuppressWarnings("deprecation")
-        void deprecatedCommitShouldWork() throws IOException {
-            Path newFile = workspace.path().resolve("flows/deprecated.json");
-            Files.writeString(newFile, "{\"name\": \"deprecated\"}");
-
-            gitService.add(workspace, ".");
-            String commitHash = gitService.commit(workspace, "Deprecated commit", "Old User", "old@example.com", null);
-
-            assertNotNull(commitHash);
-        }
     }
 
     @Nested

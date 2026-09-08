@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -74,6 +75,16 @@ class FlowServiceImplTest {
                 Instant.now(),
                 Instant.now()
         );
+
+        // FlowService runs its multi-file writes through the workspace lock;
+        // the mock has to actually execute the action it is handed
+        lenient().doAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return null;
+        }).when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Runnable.class));
+
+        lenient().doAnswer(invocation -> invocation.getArgument(1, Supplier.class).get())
+                .when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Supplier.class));
     }
 
     // ==================== Test Data Helpers ====================
