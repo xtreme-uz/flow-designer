@@ -154,6 +154,31 @@ class GitServiceImplTest {
         }
 
         @Test
+        @DisplayName("Counts commits the remote has and this workspace does not")
+        void reportsBehindCountWithoutUpstreamConfig() throws IOException {
+            String branch = "feature/TASK-13-behind";
+            WorkspaceInfo first = gitService.getOrCreateWorkspace("behind-one", branch);
+            Files.writeString(first.path().resolve("first.json"), "{}");
+            gitService.add(first, ".");
+            gitService.commit(first, "First",
+                    AuditInfo.of("one", "One", "one@example.com"), null);
+            gitService.push(first);
+
+            // A second workspace on the same branch, then the first one moves ahead
+            WorkspaceInfo second = gitService.getOrCreateWorkspace("behind-two", branch);
+            Files.writeString(first.path().resolve("second.json"), "{}");
+            gitService.add(first, ".");
+            gitService.commit(first, "Second",
+                    AuditInfo.of("one", "One", "one@example.com"), null);
+            gitService.push(first);
+
+            WorkspaceStatus status = gitService.getStatus(second);
+
+            assertEquals(1, status.behindCount(), "the remote is one commit ahead");
+            assertEquals(0, status.aheadCount());
+        }
+
+        @Test
         @DisplayName("Counts commits that have not been pushed")
         void reportsUnpushedCommits() throws IOException {
             Files.writeString(workspace.path().resolve("unpushed.json"), "{}");

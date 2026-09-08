@@ -708,14 +708,7 @@ public class GitServiceImpl implements GitService {
             return;
         }
 
-        Set<String> changed = new TreeSet<>();
-        changed.addAll(status.getAdded());
-        changed.addAll(status.getChanged());
-        changed.addAll(status.getRemoved());
-        changed.addAll(status.getModified());
-        changed.addAll(status.getMissing());
-        changed.addAll(status.getUntracked());
-        changed.addAll(status.getConflicting());
+        Set<String> changed = changedPaths(status);
 
         List<String> flowChanges = changed.stream().filter(p -> p.startsWith(THUB_DIR + "/")).toList();
         List<String> otherChanges = changed.stream().filter(p -> !p.startsWith(THUB_DIR + "/")).toList();
@@ -871,6 +864,19 @@ public class GitServiceImpl implements GitService {
         }
     }
 
+    /** Every path git would report as changed, in one sorted set. */
+    private static Set<String> changedPaths(Status status) {
+        Set<String> changed = new TreeSet<>();
+        changed.addAll(status.getConflicting());
+        changed.addAll(status.getAdded());
+        changed.addAll(status.getChanged());
+        changed.addAll(status.getRemoved());
+        changed.addAll(status.getModified());
+        changed.addAll(status.getMissing());
+        changed.addAll(status.getUntracked());
+        return changed;
+    }
+
     /**
      * Whether the remote already carries this branch.
      */
@@ -918,6 +924,35 @@ public class GitServiceImpl implements GitService {
         }
     }
 
+    /**
+     * Commits the remote has that this workspace does not. Mirrors
+     * {@link #countUnpushedCommits}: without the fallback, a branch with no
+     * upstream config reports "in sync" while the remote is ahead, and the
+     * user only finds out when their push is rejected.
+     */
+    private int countCommitsBehind(Repository repo, String branch) throws IOException {
+        BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, branch);
+        if (tracking != null) {
+            return tracking.getBehindCount();
+        }
+
+        ObjectId head = repo.resolve(Constants.HEAD);
+        ObjectId remote = repo.resolve(remoteRef(branch));
+        if (head == null || remote == null) {
+            return 0;
+        }
+
+        try (RevWalk walk = new RevWalk(repo)) {
+            walk.markStart(walk.parseCommit(remote));
+            walk.markUninteresting(walk.parseCommit(head));
+            int behind = 0;
+            while (walk.next() != null) {
+                behind++;
+            }
+            return behind;
+        }
+    }
+
     private static String remoteRef(String branch) {
         return Constants.R_REMOTES + Constants.DEFAULT_REMOTE_NAME + "/" + branch;
     }
@@ -950,31 +985,29 @@ public class GitServiceImpl implements GitService {
 
                 // Only THUB/ is ever staged, so only THUB/ decides whether the
                 // workspace is clean — otherwise an unrelated file would leave the
-                // panel dirty forever and invite a chain of empty commits
+                // panel dirty forever and invite a chain of empty commits. Those
+                // files still block a pull, so they are reported separately rather
+                // than left invisible.
                 Status status = git.status().addPath(THUB_DIR).call();
+                Set<String> unmanaged = changedPaths(git.status().call()).stream()
+                        .filter(path -> !path.startsWith(THUB_DIR + "/"))
+                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
                 // Everything the user could still lose, in one sorted list
-                Set<String> changed = new TreeSet<>();
-                // Conflicted paths appear only in getConflicting(); without them a
-                // workspace stuck mid-merge would report itself clean, hiding the
-                // files and disabling the very buttons needed to get out of it
-                changed.addAll(status.getConflicting());
-                changed.addAll(status.getAdded());
-                changed.addAll(status.getChanged());
-                changed.addAll(status.getRemoved());
-                changed.addAll(status.getModified());
-                changed.addAll(status.getMissing());
-                changed.addAll(status.getUntracked());
+                // changedPaths includes getConflicting(): without it a workspace
+                // stuck mid-merge reports itself clean, hiding the files and
+                // disabling the very buttons needed to get out of it
+                Set<String> changed = changedPaths(status);
 
                 Repository repo = git.getRepository();
                 String branch = repo.getBranch();
-                BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, branch);
 
                 return new WorkspaceStatus(
                         getHeadCommitInternal(git),
                         branch,
                         List.copyOf(changed),
+                        List.copyOf(unmanaged),
                         Math.max(countUnpushedCommits(repo, branch), 0),
-                        tracking != null ? tracking.getBehindCount() : 0,
+                        countCommitsBehind(repo, branch),
                         hasRemoteBranch(repo, branch)
                 );
             } catch (GitAPIException | IOException e) {

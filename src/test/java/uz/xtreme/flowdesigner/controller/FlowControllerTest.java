@@ -559,7 +559,7 @@ class FlowControllerTest {
         @DisplayName("GET /api/workspaces/status - get workspace status")
         void getWorkspaceStatus() {
             when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
-                    "abc123", BRANCH, List.of("THUB/FlowType-data.json"), 2, 0, true));
+                    "abc123", BRANCH, List.of("THUB/FlowType-data.json"), List.of(), 2, 0, true));
 
             FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
 
@@ -576,7 +576,7 @@ class FlowControllerTest {
         @DisplayName("GET /api/workspaces/status - reports a clean workspace")
         void getWorkspaceStatusClean() {
             when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
-                    "abc123", BRANCH, List.of(), 0, 0, true));
+                    "abc123", BRANCH, List.of(), List.of(), 0, 0, true));
 
             FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
 
