@@ -40,9 +40,6 @@ export default function App() {
 
   // Flow state
   const [currentFlowName, setCurrentFlowName] = useState(null);
-  // Where the open flow came from: a main-branch flow saved on a feature branch
-  // is a copy into the workspace, not an update of something already there
-  const [currentFlowSource, setCurrentFlowSource] = useState('workspace');
   const [currentDeploymentData, setCurrentDeploymentData] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
@@ -333,7 +330,6 @@ export default function App() {
       setNodes(flowNodes);
       setEdges(flowEdges);
       setCurrentFlowName(flowName);
-      setCurrentFlowSource(source);
       markAsSaved();
       fetchStatuses();
       return true;
@@ -385,7 +381,6 @@ export default function App() {
         if (err.status !== 404) throw err;
         await api.createFlow(currentFlowName, deploymentData, branch);
       }
-      setCurrentFlowSource('workspace');
       // Positions are the user's arrangement, not THUB data — stored separately.
       // The flow itself is already saved, so a failure here costs the layout only.
       try {
@@ -442,7 +437,6 @@ export default function App() {
       // Convert to React Flow for canvas display
       const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
       setCurrentFlowName(flowName);
-      setCurrentFlowSource('workspace');
       setCurrentDeploymentData(deploymentData);
       setNodes(flowNodes);
       setEdges(flowEdges);
