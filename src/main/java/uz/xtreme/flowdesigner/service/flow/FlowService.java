@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.flow;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubDeploymentData;
+import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowType;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowStatus;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
 
@@ -45,6 +46,18 @@ public interface FlowService {
      * @throws uz.xtreme.flowdesigner.exception.FlowValidationException if the flow already exists
      */
     void createFlow(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData);
+
+    /**
+     * Saves a flow that must already exist, keeping the creation audit from the
+     * stored record and stamping the modification as {@code userId}. Reading the
+     * stored record and writing happen under one lock, so a flow deleted in
+     * between cannot be resurrected by the write.
+     *
+     * @return the flow type as stored, with the audit fields the server owns
+     * @throws uz.xtreme.flowdesigner.exception.FlowNotFoundException if the flow is gone
+     */
+    ThubFlowType updateFlow(WorkspaceInfo workspace, String flowTypeId,
+                            ThubDeploymentData deploymentData, String userId);
 
     /**
      * Canvas layout of a flow in the workspace, empty when it has none.

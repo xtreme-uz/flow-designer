@@ -392,12 +392,17 @@ export default function App() {
         await api.createFlow(currentFlowName, deploymentData, branch);
       }
       setOpenedFromMain(false);
-      // Positions are the user's arrangement, not THUB data — stored separately.
-      // The flow itself is already saved, so a failure here costs the layout only.
+      // The canvas file holds the arrangement and the flow's node list, so losing
+      // it costs more than positions: a node with no action and no transition is
+      // only recorded there. The flow itself is already saved by this point.
       try {
         await api.saveWorkspaceFlowLayout(currentFlowName, reactFlowToLayout(nodes), branch);
       } catch (layoutError) {
-        toast.warning(`Flow saved, but the canvas layout was not: ${layoutError.message}`);
+        toast.error(
+          `Flow saved, but its canvas was not: ${layoutError.message}. ` +
+          'Save again — until it succeeds, node positions and any unconnected nodes are not stored.',
+          10000
+        );
       }
       setCurrentDeploymentData(deploymentData);
       markAsSaved();

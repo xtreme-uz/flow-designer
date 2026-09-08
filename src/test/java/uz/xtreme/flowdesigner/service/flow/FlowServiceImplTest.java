@@ -586,6 +586,75 @@ class FlowServiceImplTest {
         }
     }
 
+    // ==================== Update Flow Tests ====================
+
+    @Nested
+    @DisplayName("Update Flow Tests")
+    class UpdateFlowTests {
+
+        @Test
+        @DisplayName("Should keep the stored creation audit")
+        void updateKeepsCreationAudit() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData original = createValidDeploymentData("audited");
+            flowService.saveFlow(workspace, "audited", withAudit(original,
+                    "original-author", createdAt, "original-author", createdAt));
+
+            // What the canvas sends back: no audit fields at all
+            ThubFlowType updated = flowService.updateFlow(workspace, "audited",
+                    withAudit(original, null, null, null, null), "editor");
+
+            assertEquals("original-author", updated.createdBy());
+            assertEquals(createdAt, updated.createdAt());
+            assertEquals("editor", updated.lastModifiedBy());
+            assertNotNull(updated.lastModifiedAt());
+        }
+
+        @Test
+        @DisplayName("Should ignore a forged author in the request body")
+        void updateIgnoresForgedAuthor() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData original = createValidDeploymentData("audited");
+            flowService.saveFlow(workspace, "audited", withAudit(original,
+                    "original-author", createdAt, "original-author", createdAt));
+
+            Instant forgedAt = Instant.parse("1999-01-01T00:00:00Z");
+            ThubFlowType updated = flowService.updateFlow(workspace, "audited",
+                    withAudit(original, "someone-else", forgedAt, "someone-else", forgedAt),
+                    "editor");
+
+            assertEquals("original-author", updated.createdBy());
+            assertEquals(createdAt, updated.createdAt());
+            assertEquals("editor", updated.lastModifiedBy());
+
+            // …and the stored record carries the same audit, not the forged one
+            ThubFlowType stored = thubDataService.readFlowTypes(workspacePath)
+                    .get(ThubDataService.flowTypeKey("audited"));
+            assertEquals("original-author", stored.createdBy());
+            assertEquals(createdAt, stored.createdAt());
+        }
+
+        @Test
+        @DisplayName("Should throw when the flow does not exist")
+        void updateUnknownFlow() {
+            assertThrows(FlowNotFoundException.class, () ->
+                    flowService.updateFlow(workspace, "missing",
+                            createValidDeploymentData("missing"), "editor"));
+        }
+
+        private ThubDeploymentData withAudit(ThubDeploymentData data, String createdBy,
+                                             Instant createdAt, String modifiedBy, Instant modifiedAt) {
+            ThubFlowType type = data.flowType();
+            return new ThubDeploymentData(
+                    new ThubFlowType(
+                            type.id(), type.initialFlowStatusId(), type.finalFlowStatusId(),
+                            type.description(), type.version(), type.component(),
+                            createdBy, createdAt, modifiedBy, modifiedAt, type.categorization()),
+                    data.flowStatuses(), data.flowStatusActions(),
+                    data.flowStatusTransitions(), data.flowAssignments());
+        }
+    }
+
     // ==================== Delete Flow Tests ====================
 
     @Nested

@@ -127,6 +127,50 @@ public class FlowServiceImpl implements FlowService {
     }
 
     @Override
+    public ThubFlowType updateFlow(WorkspaceInfo workspace, String flowTypeId,
+                                   ThubDeploymentData deploymentData, String userId) {
+        return gitService.withWorkspaceLock(workspace, () -> {
+            requireWorkspaceOnDisk(workspace);
+
+            // Only the flow type is needed to recover the creation audit; reading
+            // the whole flow would cost five files and the layout for two fields
+            ThubFlowType stored = thubDataService.readFlowTypes(workspace.path())
+                    .get(ThubDataService.flowTypeKey(flowTypeId));
+            if (stored == null) {
+                throw new FlowNotFoundException(flowTypeId, workspace.id());
+            }
+            if (deploymentData == null || deploymentData.flowType() == null) {
+                throw new FlowValidationException("Flow type cannot be null");
+            }
+
+            ThubFlowType incoming = deploymentData.flowType();
+            ThubFlowType stamped = new ThubFlowType(
+                    // Keyed by the flow being saved, and the creation audit is the
+                    // stored record's — a client cannot rewrite either
+                    flowTypeId,
+                    incoming.initialFlowStatusId(),
+                    incoming.finalFlowStatusId(),
+                    incoming.description(),
+                    incoming.version(),
+                    incoming.component(),
+                    stored.createdBy(),
+                    stored.createdAt(),
+                    incoming.lastModifiedBy(),
+                    incoming.lastModifiedAt(),
+                    incoming.categorization()
+            ).withModification(userId);
+
+            saveFlowLocked(workspace, flowTypeId, new ThubDeploymentData(
+                    stamped,
+                    deploymentData.flowStatuses(),
+                    deploymentData.flowStatusActions(),
+                    deploymentData.flowStatusTransitions(),
+                    deploymentData.flowAssignments()));
+            return stamped;
+        });
+    }
+
+    @Override
     public void saveLayout(WorkspaceInfo workspace, String flowTypeId, FlowLayout layout) {
         gitService.withWorkspaceLock(workspace, () -> {
             requireWorkspaceOnDisk(workspace);

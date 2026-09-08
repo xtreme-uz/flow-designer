@@ -312,64 +312,6 @@ class FlowControllerTest {
         }
 
         @Test
-        @DisplayName("PUT /api/workspaces/flows/{name} - keeps the stored creation audit")
-        void updateFlowKeepsCreationAudit() {
-            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
-            ThubDeploymentData stored = new ThubDeploymentData(
-                    new ThubFlowType(
-                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
-                            "original-author", createdAt, "original-author", createdAt, Map.of()),
-                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
-                    List.of(), List.of(), List.of());
-            // What the canvas sends back: no audit fields at all
-            ThubDeploymentData incoming = new ThubDeploymentData(
-                    new ThubFlowType(
-                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
-                            null, null, null, null, Map.of()),
-                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
-                    List.of(), List.of(), List.of());
-            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
-
-            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
-                    new FlowController.UpdateFlowRequest(incoming));
-
-            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
-            ThubFlowType result = saved.getValue().flowType();
-            assertEquals("original-author", result.createdBy());
-            assertEquals(createdAt, result.createdAt());
-            assertEquals(USER_ID, result.lastModifiedBy());
-        }
-
-        @Test
-        @DisplayName("PUT /api/workspaces/flows/{name} - refuses a forged author")
-        void updateFlowIgnoresForgedAuthor() {
-            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
-            ThubDeploymentData stored = new ThubDeploymentData(
-                    new ThubFlowType(
-                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
-                            "original-author", createdAt, "original-author", createdAt, Map.of()),
-                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
-                    List.of(), List.of(), List.of());
-            ThubDeploymentData forged = new ThubDeploymentData(
-                    new ThubFlowType(
-                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
-                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"),
-                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"), Map.of()),
-                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
-                    List.of(), List.of(), List.of());
-            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
-
-            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
-                    new FlowController.UpdateFlowRequest(forged));
-
-            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
-            assertEquals("original-author", saved.getValue().flowType().createdBy());
-            assertEquals(createdAt, saved.getValue().flowType().createdAt());
-        }
-
-        @Test
         @DisplayName("POST /api/workspaces/flows - propagates the duplicate-name rejection")
         void createFlowAlreadyExists() {
             // The check lives in the service, under the same lock as the write
@@ -382,10 +324,11 @@ class FlowControllerTest {
         }
 
         @Test
-        @DisplayName("PUT /api/workspaces/flows/{name} - update flow with ThubDeploymentData")
+        @DisplayName("PUT /api/workspaces/flows/{name} - delegates the update to the service")
         void updateFlow() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
+            when(flowService.updateFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class), eq(USER_ID)))
+                    .thenReturn(deploymentData.flowType());
 
             FlowSummary result = controller.updateFlow(
                     USER_ID, BRANCH, FLOW_NAME,
@@ -394,28 +337,28 @@ class FlowControllerTest {
 
             assertNotNull(result);
             assertEquals(FLOW_NAME, result.flowTypeId());
-            // Verify saveFlow is called with updated lastModifiedBy
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class));
+            verify(flowService).updateFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class), eq(USER_ID));
         }
 
         @Test
-        @DisplayName("PUT /api/workspaces/flows/{name} - sets lastModifiedBy from header")
+        @DisplayName("PUT /api/workspaces/flows/{name} - passes the header user as the editor")
         void updateFlowSetsLastModifiedBy() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
+            when(flowService.updateFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class), eq(USER_ID)))
+                    .thenReturn(deploymentData.flowType());
 
             controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
                     new FlowController.UpdateFlowRequest(deploymentData));
 
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), argThat(data ->
-                    USER_ID.equals(data.flowType().lastModifiedBy())
-            ));
+            // The audit stamping itself lives in the service, under the workspace lock
+            verify(flowService).updateFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class), eq(USER_ID));
         }
 
         @Test
-        @DisplayName("PUT /api/workspaces/flows/{name} - throws when not found")
+        @DisplayName("PUT /api/workspaces/flows/{name} - propagates the not-found rejection")
         void updateFlowNotFound() {
-            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.empty());
+            doThrow(new FlowNotFoundException(FLOW_NAME, "workspace"))
+                    .when(flowService).updateFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class), eq(USER_ID));
 
             assertThrows(FlowNotFoundException.class, () ->
                     controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,

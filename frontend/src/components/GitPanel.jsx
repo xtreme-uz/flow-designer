@@ -161,8 +161,8 @@ export default function GitPanel({ hasUnsavedChanges }) {
               )}
               {workspaceStatus.unmanagedFiles?.length > 0 && (
                 <div className="unmanaged-files">
-                  <span>These files are not part of any flow. Commit ignores them, but Pull
-                    will not run until they are removed:</span>
+                  <span>These files are not part of any flow, so Commit leaves them alone.
+                    Changes to files the repository already tracks will block Pull:</span>
                   <ul className="changed-files">
                     {workspaceStatus.unmanagedFiles.map((file) => (
                       <li key={file}>{file}</li>

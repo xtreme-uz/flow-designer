@@ -36,6 +36,25 @@ describe('EdgeEditor', () => {
     expect(screen.getByRole('checkbox', { name: /technical error/i })).not.toBeChecked();
   });
 
+  it('matches result types written with spaces after the comma', async () => {
+    const onUpdate = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <EdgeEditor
+        edge={edge({ data: { actionResultTypeIds: 'success, business-error', storeAsRequestResult: true } })}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('checkbox', { name: /business error/i })).toBeChecked();
+
+    await user.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(onUpdate.mock.calls[0][1].actionResultTypeIds).toBe('success, business-error');
+  });
+
   it('collects several result types onto the one transition', async () => {
     const onUpdate = vi.fn();
     const user = userEvent.setup();

@@ -76,6 +76,7 @@ public class GitServiceImpl implements GitService {
     static final List<String> MANAGED_DIRS = List.of(THUB_DIR, LAYOUT_DIR);
     private static final int FETCH_TIMEOUT_SECONDS = 10;
     private static final Duration FETCH_INTERVAL = Duration.ofSeconds(30);
+    private static final Duration MAIN_REPO_PULL_INTERVAL = Duration.ofSeconds(30);
 
     private final GitProperties properties;
     private final ConcurrentHashMap<String, ReentrantLock> workspaceLocks = new ConcurrentHashMap<>();
@@ -89,6 +90,7 @@ public class GitServiceImpl implements GitService {
 
     private Git mainRepo;
     private CredentialsProvider credentialsProvider;
+    private volatile Instant lastMainRepoPull;
 
     @Autowired
     public GitServiceImpl(GitProperties properties, UserGitCredentials userGitCredentials) {
@@ -200,8 +202,21 @@ public class GitServiceImpl implements GitService {
 
     @Override
     public void pullMainRepo() {
+        pullMainRepo(false);
+    }
+
+    @Override
+    public void pullMainRepo(boolean force) {
         if (mainRepo == null) {
             log.warn("Main repository not initialized, skipping pull");
+            return;
+        }
+
+        // Every read of the main branch asks for a pull — opening one flow asks
+        // several times over — so unforced pulls are throttled. Anything that has
+        // to see the latest state, such as the refresh after a push, forces one.
+        Instant last = lastMainRepoPull;
+        if (!force && last != null && last.isAfter(Instant.now().minus(MAIN_REPO_PULL_INTERVAL))) {
             return;
         }
 
@@ -223,6 +238,7 @@ public class GitServiceImpl implements GitService {
                 pullCommand.setCredentialsProvider(credentialsProvider);
             }
             PullResult result = pullCommand.call();
+            lastMainRepoPull = Instant.now();
             if (!result.isSuccessful()) {
                 // Nothing writes to the main repo, so this means it was tampered with locally
                 log.warn("Main repository pull did not complete cleanly: {}", result);
@@ -1066,23 +1082,21 @@ public class GitServiceImpl implements GitService {
                 // a round-trip to the remote.
                 fetchIfStale(git, workspace);
 
-                // Only THUB/ is ever staged, so only THUB/ decides whether the
-                // workspace is clean — otherwise an unrelated file would leave the
-                // panel dirty forever and invite a chain of empty commits. Those
-                // files still block a pull, so they are reported separately rather
-                // than left invisible.
-                var statusCommand = git.status();
-                MANAGED_DIRS.forEach(statusCommand::addPath);
-                Status status = statusCommand.call();
-
-                Set<String> unmanaged = changedPaths(git.status().call()).stream()
-                        .filter(path -> !isManaged(path))
-                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
-                // Everything the user could still lose, in one sorted list
+                // One scan of the working tree, split in two: only the managed
+                // directories are ever staged, so only they decide whether the
+                // workspace is clean — an unrelated file would otherwise leave the
+                // panel dirty forever and invite a chain of empty commits. The rest
+                // is reported separately rather than left invisible.
                 // changedPaths includes getConflicting(): without it a workspace
                 // stuck mid-merge reports itself clean, hiding the files and
-                // disabling the very buttons needed to get out of it
-                Set<String> changed = changedPaths(status);
+                // disabling the very buttons needed to get out of it.
+                Set<String> allChanged = changedPaths(git.status().call());
+                Set<String> changed = allChanged.stream()
+                        .filter(GitServiceImpl::isManaged)
+                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+                Set<String> unmanaged = allChanged.stream()
+                        .filter(path -> !isManaged(path))
+                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
 
                 Repository repo = git.getRepository();
                 String branch = repo.getBranch();
@@ -1137,7 +1151,7 @@ public class GitServiceImpl implements GitService {
     @Scheduled(fixedRateString = "${app.git.main-repo-refresh-interval:PT5M}")
     public void refreshMainRepo() {
         try {
-            pullMainRepo();
+            pullMainRepo(true);
         } catch (Exception e) {
             log.warn("Scheduled main repo refresh failed", e);
         }
@@ -1201,6 +1215,9 @@ public class GitServiceImpl implements GitService {
             return true;
         }
         try {
+            // Deliberately wider than requireCleanTreeForPull: a pull only needs the
+            // managed files to be clean because reset --hard leaves strays alone, but
+            // cleanup deletes the whole clone, so an unmanaged file is lost with it
             if (!git.status().call().isClean()) {
                 return true;
             }

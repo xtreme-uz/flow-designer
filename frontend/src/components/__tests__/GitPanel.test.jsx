@@ -59,12 +59,12 @@ describe('GitPanel', () => {
     expect(screen.getByText(/1 uncommitted file/i)).toBeInTheDocument();
   });
 
-  it('explains files it does not manage, which block a pull', () => {
+  it('lists files it does not manage, and says commit leaves them alone', () => {
     workspace.workspaceStatus = status({ unmanagedFiles: ['notes.txt'] });
     render(<GitPanel hasUnsavedChanges={false} />);
 
     expect(screen.getByText('notes.txt')).toBeInTheDocument();
-    expect(screen.getByText(/not part of any flow/i)).toBeInTheDocument();
+    expect(screen.getByText(/Commit leaves them alone/i)).toBeInTheDocument();
   });
 
   it('refuses to commit a clean workspace', () => {

@@ -240,29 +240,10 @@ public class FlowController {
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
 
-        ThubDeploymentData stored = flowService.getFlow(workspace, name)
-                .orElseThrow(() -> new FlowNotFoundException(name, workspace.id()));
-
-        ThubDeploymentData deploymentData = request.deploymentData();
-        if (deploymentData == null || deploymentData.flowType() == null) {
-            throw new FlowValidationException("Flow type cannot be null");
-        }
-
-        // Creation audit comes from the stored record, never from the request: the
-        // client rebuilds the flow type from its own canvas state and would blank
-        // it out — or claim someone else wrote the flow
-        var updatedFlowType = withStoredCreationAudit(deploymentData.flowType(), stored.flowType(), name)
-                .withModification(userId);
-        ThubDeploymentData updatedData = new ThubDeploymentData(
-                updatedFlowType,
-                deploymentData.flowStatuses(),
-                deploymentData.flowStatusActions(),
-                deploymentData.flowStatusTransitions(),
-                deploymentData.flowAssignments()
-        );
-
-        flowService.saveFlow(workspace, name, updatedData);
-        return FlowSummary.from(updatedFlowType);
+        // The service reads the stored record and writes under one lock: the audit
+        // fields the server owns cannot be set from the request body
+        return FlowSummary.from(
+                flowService.updateFlow(workspace, name, request.deploymentData(), userId));
     }
 
     @DeleteMapping("/workspaces/flows/{name}")
@@ -346,7 +327,8 @@ public class FlowController {
         gitService.push(workspace);
 
         try {
-            gitService.pullMainRepo();
+            // Forced: the point of this refresh is to show what was just pushed
+            gitService.pullMainRepo(true);
         } catch (Exception e) {
             log.warn("Failed to refresh main repository after push", e);
         }

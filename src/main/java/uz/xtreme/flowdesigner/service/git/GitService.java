@@ -16,9 +16,17 @@ public interface GitService {
     void initMainRepo();
 
     /**
-     * Pulls latest changes to the main repository.
+     * Pulls latest changes to the main repository, at most once every 30 seconds.
+     * Reads of the main branch call this freely; the throttle keeps opening a
+     * flow from turning into several round-trips to the remote.
      */
     void pullMainRepo();
+
+    /**
+     * @param force bypass the throttle, for callers that must see the latest
+     *              state — the refresh after a push, or the scheduled refresh
+     */
+    void pullMainRepo(boolean force);
 
     /**
      * Gets or creates a workspace for the given user and branch.
