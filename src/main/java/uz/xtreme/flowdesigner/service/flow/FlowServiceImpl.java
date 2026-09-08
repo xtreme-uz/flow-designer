@@ -119,12 +119,15 @@ public class FlowServiceImpl implements FlowService {
         }
         thubDataService.writeFlowStatuses(basePath, statuses);
 
-        // Replace FlowStatusActions for this flowTypeId
+        // Replace FlowStatusActions for this flowTypeId. Every record is stamped
+        // with the flow being saved: the client may still be holding the name from
+        // before a rename, and since removal now matches on this field, a stale one
+        // would detach the record from its flow.
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
         removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId);
         for (ThubFlowStatusAction action : deploymentData.flowStatusActions()) {
             String key = ThubDataService.flowStatusActionKey(flowTypeId, action.flowStatusId());
-            actions.put(key, action);
+            actions.put(key, withFlowTypeId(action, flowTypeId));
         }
         thubDataService.writeFlowStatusActions(basePath, actions);
 
@@ -134,7 +137,7 @@ public class FlowServiceImpl implements FlowService {
         for (ThubFlowStatusTransition transition : deploymentData.flowStatusTransitions()) {
             String key = ThubDataService.flowStatusTransitionKey(
                     flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId());
-            transitions.put(key, transition);
+            transitions.put(key, withFlowTypeId(transition, flowTypeId));
         }
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
 
@@ -143,7 +146,7 @@ public class FlowServiceImpl implements FlowService {
         removeByFlowTypeId(assignments, flowTypeId, ThubFlowAssignment::flowTypeId);
         for (ThubFlowAssignment assignment : deploymentData.flowAssignments()) {
             String key = ThubDataService.flowAssignmentKey(assignment.id());
-            assignments.put(key, assignment);
+            assignments.put(key, withFlowTypeId(assignment, flowTypeId));
         }
         thubDataService.writeFlowAssignments(basePath, assignments);
 
@@ -438,6 +441,33 @@ public class FlowServiceImpl implements FlowService {
      * unambiguous, and it also covers FlowAssignment, whose key
      * ({@code R_{assignmentId}}) carries no flow name at all.
      */
+    private static ThubFlowStatusAction withFlowTypeId(ThubFlowStatusAction action, String flowTypeId) {
+        if (flowTypeId.equals(action.flowTypeId())) {
+            return action;
+        }
+        return new ThubFlowStatusAction(
+                flowTypeId, action.flowStatusId(), action.actionModuleId(), action.actionId(),
+                action.maxActionTriesCount(), action.maxActionTryingTime(), action.warningActionTryingTime());
+    }
+
+    private static ThubFlowStatusTransition withFlowTypeId(ThubFlowStatusTransition transition, String flowTypeId) {
+        if (flowTypeId.equals(transition.flowTypeId())) {
+            return transition;
+        }
+        return new ThubFlowStatusTransition(
+                flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId(),
+                transition.actionResultTypeIds(), transition.storeActionResultAsRequestResult());
+    }
+
+    private static ThubFlowAssignment withFlowTypeId(ThubFlowAssignment assignment, String flowTypeId) {
+        if (flowTypeId.equals(assignment.flowTypeId())) {
+            return assignment;
+        }
+        return new ThubFlowAssignment(
+                assignment.id(), assignment.sourcePaymentActorId(), assignment.targetPaymentActorId(),
+                assignment.paymentType(), flowTypeId);
+    }
+
     private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
                                                Function<T, String> flowTypeIdExtractor) {
         map.values().removeIf(record -> flowTypeId.equals(flowTypeIdExtractor.apply(record)));

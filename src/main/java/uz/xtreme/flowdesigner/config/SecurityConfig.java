@@ -44,8 +44,11 @@ public class SecurityConfig {
             )
             .oauth2Login(oauth2 -> oauth2
                 .defaultSuccessUrl("/", true)
-                // Rejects accounts outside the allowlist before a session exists
-                .userInfoEndpoint(userInfo -> userInfo.userService(oauth2UserService))
+                // Rejects accounts outside the allowlist before a session exists,
+                // on both the plain OAuth2 and the OIDC user-info paths
+                .userInfoEndpoint(userInfo -> userInfo
+                    .userService(oauth2UserService)
+                    .oidcUserService(oauth2UserService.oidcUserService()))
                 .failureUrl("/?error=login_denied")
             )
             .logout(logout -> logout

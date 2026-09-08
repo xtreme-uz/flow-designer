@@ -194,6 +194,29 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("Saving re-stamps records the client still labels with the old flow name")
+        void saveRestampsStaleFlowTypeId() {
+            ThubDeploymentData base = createValidDeploymentData("payment-v2");
+            // What a client holds right after a rename: records still carrying the old name
+            ThubDeploymentData stale = new ThubDeploymentData(
+                    base.flowType(),
+                    base.flowStatuses(),
+                    List.of(new ThubFlowStatusAction("payment-v1", "ACCEPTED",
+                            "source-payment-actor", "realize-debit", null, "30m", "10m")),
+                    List.of(new ThubFlowStatusTransition("payment-v1", "ACCEPTED", "FINISHED", "success", true)),
+                    List.of(new ThubFlowAssignment("card-processing", "src", "dst", "CARD", "payment-v1")));
+
+            flowService.saveFlow(workspace, "payment-v2", stale);
+
+            Optional<ThubDeploymentData> stored = flowService.getFlow(workspace, "payment-v2");
+            assertTrue(stored.isPresent(), "the flow reads back under the name it was saved as");
+            assertEquals(1, stored.get().flowStatusActions().size());
+            assertEquals(1, stored.get().flowStatusTransitions().size());
+            assertEquals(1, stored.get().flowAssignments().size());
+            assertEquals("payment-v2", stored.get().flowAssignments().get(0).flowTypeId());
+        }
+
+        @Test
         @DisplayName("Saving keeps the assignments handed back by the client")
         void saveKeepsAssignments() {
             ThubDeploymentData base = createValidDeploymentData("payment");

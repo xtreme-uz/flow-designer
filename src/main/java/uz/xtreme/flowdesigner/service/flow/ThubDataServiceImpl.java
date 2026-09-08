@@ -36,6 +36,8 @@ public class ThubDataServiceImpl implements ThubDataService {
 
     static final String THUB_DIR = "THUB";
 
+    private static final String TEMP_SUFFIX = ".tmp";
+
     private final ObjectMapper objectMapper;
 
     public ThubDataServiceImpl(ObjectMapper objectMapper) {
@@ -130,9 +132,11 @@ public class ThubDataServiceImpl implements ThubDataService {
 
             // Write beside the target and move into place, so a failure mid-write
             // leaves the previous file intact instead of a truncated one. The temp
-            // name is fixed per table: a file orphaned by a crash is overwritten by
-            // the next save rather than accumulating in the working tree.
-            Path tempFile = thubDir.resolve("." + tableName + "-data.json.tmp");
+            // name is fixed per table, and any file orphaned by a crash is swept
+            // here — left behind it would keep the workspace looking dirty forever
+            // and could be committed by "git add THUB/".
+            deleteStaleTempFiles(thubDir);
+            Path tempFile = thubDir.resolve(tempFileName(tableName));
             try {
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), wrapper);
                 try {
@@ -145,6 +149,26 @@ public class ThubDataServiceImpl implements ThubDataService {
             }
         } catch (IOException e) {
             throw new FlowStorageException("Failed to write THUB data file: " + tableName, e);
+        }
+    }
+
+    private static String tempFileName(String tableName) {
+        return "." + tableName + "-data.json" + TEMP_SUFFIX;
+    }
+
+    /**
+     * Removes temp files left by an interrupted write. Safe to do unconditionally:
+     * writes to a workspace are serialized by the workspace lock, so no live write
+     * owns one of these when this runs.
+     */
+    private void deleteStaleTempFiles(Path thubDir) {
+        try (var entries = Files.list(thubDir)) {
+            for (Path entry : entries.filter(p -> p.getFileName().toString().endsWith(TEMP_SUFFIX)).toList()) {
+                Files.deleteIfExists(entry);
+                log.warn("Removed leftover THUB temp file: {}", entry.getFileName());
+            }
+        } catch (IOException e) {
+            log.warn("Failed to sweep THUB temp files in {}", thubDir, e);
         }
     }
 

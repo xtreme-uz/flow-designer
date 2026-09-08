@@ -253,6 +253,7 @@ public class GitServiceImpl implements GitService {
 
             gitInstances.put(workspaceId, git);
             workspaces.put(workspaceId, workspace);
+            excludeTempFilesFromGit(workspacePath);
             log.info("Restored workspace: {}", workspaceId);
         } catch (IOException e) {
             if (git != null) {
@@ -276,6 +277,28 @@ public class GitServiceImpl implements GitService {
         } catch (IOException e) {
             // The workspace still works; only restore-after-restart degrades
             log.warn("Failed to write workspace metadata at {}", metadataFile, e);
+        }
+    }
+
+    /**
+     * Keeps the atomic-write temp files out of git via .git/info/exclude — local
+     * to this clone, so nothing is added to the repository's own .gitignore. A
+     * temp file orphaned by a crash then cannot be staged by "git add THUB/" or
+     * make the workspace look permanently dirty.
+     */
+    private void excludeTempFilesFromGit(Path workspacePath) {
+        Path excludeFile = workspacePath.resolve(GIT_DIR).resolve("info").resolve("exclude");
+        String rule = THUB_DIR + "/.*-data.json.tmp";
+        try {
+            Files.createDirectories(excludeFile.getParent());
+            if (Files.exists(excludeFile) && Files.readString(excludeFile).contains(rule)) {
+                return;
+            }
+            Files.writeString(excludeFile, System.lineSeparator() + "# Flow Designer atomic write temp files"
+                            + System.lineSeparator() + rule + System.lineSeparator(),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            log.warn("Failed to write git exclude rules for {}", workspacePath, e);
         }
     }
 
@@ -370,6 +393,7 @@ public class GitServiceImpl implements GitService {
             }
 
             writeWorkspaceMetadata(workspacePath, userId, branchName);
+            excludeTempFilesFromGit(workspacePath);
 
             Instant now = Instant.now();
             WorkspaceInfo workspace = new WorkspaceInfo(

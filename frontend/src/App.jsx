@@ -101,21 +101,21 @@ export default function App() {
   );
 
   const onConnect = useCallback(
-    (params) => setEdges((eds) => {
+    (params) => {
       // THUB stores one transition per (status, next status) pair, so a second
       // edge between the same two nodes would silently replace the first on save.
       // Multiple result types belong on one edge, via the edge editor.
-      const duplicate = eds.some(
+      const duplicate = edges.some(
         (e) => e.source === params.source && e.target === params.target
       );
       if (duplicate) {
         toast.warning(
           'These statuses are already connected. Open the existing transition to add more result types.'
         );
-        return eds;
+        return;
       }
-      markAsChanged();
-      return addEdge({
+
+      setEdges((eds) => addEdge({
         ...params,
         type: 'smoothstep',
         animated: true,
@@ -124,9 +124,10 @@ export default function App() {
           actionResultTypeIds: 'success',
           storeAsRequestResult: true
         }
-      }, eds);
-    }),
-    [toast, markAsChanged]
+      }, eds));
+      markAsChanged();
+    },
+    [edges, toast, markAsChanged]
   );
 
   const onNodeClick = useCallback((event, node) => {

@@ -208,6 +208,9 @@ public class FlowController {
                 .orElseThrow(() -> new FlowNotFoundException(name, workspace.id()));
 
         ThubDeploymentData deploymentData = request.deploymentData();
+        if (deploymentData == null || deploymentData.flowType() == null) {
+            throw new FlowValidationException("Flow type cannot be null");
+        }
 
         // Creation audit comes from the stored record, never from the request: the
         // client rebuilds the flow type from its own canvas state and would blank
@@ -340,7 +343,9 @@ public class FlowController {
 
         return new WorkspaceStatusResponse(
                 workspace.id(),
-                workspace.branchName(),
+                // The repository's own branch, not the registry's: if they ever
+                // diverge, the client should see the truth
+                status.branchName(),
                 status.headCommit(),
                 status.changedFiles(),
                 status.clean(),
@@ -367,6 +372,10 @@ public class FlowController {
 
         WorkspaceInfo currentWorkspace = getWorkspaceOrThrow(userId, currentBranch);
         gitService.createBranch(currentWorkspace, request.newBranchName());
+        // createBranch switches the source clone onto the new branch. Put it back:
+        // the workspace registry says this clone is on currentBranch, and workspace
+        // identity is recovered from the checked-out branch after a restart.
+        gitService.checkout(currentWorkspace, currentBranch);
         WorkspaceInfo newWorkspace = gitService.getOrCreateWorkspace(userId, request.newBranchName());
 
         return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(newWorkspace));

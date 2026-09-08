@@ -7,6 +7,9 @@ import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
+import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserService;
+import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +25,7 @@ public class AllowlistOAuth2UserService implements OAuth2UserService<OAuth2UserR
     private static final String ERROR_CODE = "access_denied";
 
     private final OAuth2UserService<OAuth2UserRequest, OAuth2User> delegate = new DefaultOAuth2UserService();
+    private final OidcUserService oidcDelegate = new OidcUserService();
     private final AuthProperties authProperties;
 
     public AllowlistOAuth2UserService(AuthProperties authProperties) {
@@ -34,8 +38,19 @@ public class AllowlistOAuth2UserService implements OAuth2UserService<OAuth2UserR
 
     @Override
     public OAuth2User loadUser(OAuth2UserRequest userRequest) throws OAuth2AuthenticationException {
-        OAuth2User user = delegate.loadUser(userRequest);
+        return checkAllowed(delegate.loadUser(userRequest));
+    }
 
+    /**
+     * The OIDC path is a different service: a provider registration that requests
+     * the "openid" scope goes through OidcUserService and would otherwise skip the
+     * allowlist entirely.
+     */
+    public OAuth2UserService<OidcUserRequest, OidcUser> oidcUserService() {
+        return userRequest -> (OidcUser) checkAllowed(oidcDelegate.loadUser(userRequest));
+    }
+
+    private OAuth2User checkAllowed(OAuth2User user) {
         String username = OAuth2UserAttributes.username(user);
         String email = OAuth2UserAttributes.email(user);
 
