@@ -284,6 +284,12 @@ export default function App() {
     markAsSaved();
   }, [branch, markAsSaved]);
 
+  // Mirrors GitPanel: the workspace write already succeeded, but a stale status
+  // would leave its buttons disabled, so say so instead of failing silently
+  const refreshStatusQuietly = () => refreshStatus().catch(() => {
+    toast.warning('Workspace status could not be refreshed — use ⟳ in the Git panel.');
+  });
+
   const confirmDiscardChanges = (action) => {
     if (!hasUnsavedChanges) return true;
     return window.confirm(`You have unsaved changes. ${action} anyway?`);
@@ -356,7 +362,7 @@ export default function App() {
       await api.updateFlow(currentFlowName, deploymentData, branch);
       setCurrentDeploymentData(deploymentData);
       markAsSaved();
-      refreshStatus().catch(() => {});
+      refreshStatusQuietly();
       toast.success('Flow saved successfully!');
     } catch (err) {
       if (err.errors && err.errors.length > 0) {
@@ -408,7 +414,7 @@ export default function App() {
       setEdges(flowEdges);
       markAsSaved();
       setShowNewFlowModal(false);
-      refreshStatus().catch(() => {});
+      refreshStatusQuietly();
       toast.success(`Flow '${flowName}' created successfully!`);
       fetchStatuses();
     } catch (err) {
@@ -431,7 +437,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.deleteFlow(currentFlowName, branch);
-      refreshStatus().catch(() => {});
+      refreshStatusQuietly();
       toast.success(`Flow '${currentFlowName}' deleted successfully`);
       setCurrentFlowName(null);
       setCurrentDeploymentData(null);
@@ -463,7 +469,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.renameFlow(currentFlowName, newName, branch);
-      refreshStatus().catch(() => {});
+      refreshStatusQuietly();
       toast.success(`Flow renamed to '${newName}'`);
       setCurrentFlowName(newName);
       setCurrentDeploymentData((prev) => {

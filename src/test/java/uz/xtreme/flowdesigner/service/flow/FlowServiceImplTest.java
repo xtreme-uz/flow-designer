@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.flow;
 import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
+import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -53,6 +54,8 @@ class FlowServiceImplTest {
         workspacePath = tempDir.resolve("workspaces/user1-feature_test");
         Files.createDirectories(mainRepoPath);
         Files.createDirectories(workspacePath);
+        // A workspace is a clone; writes refuse to run in a directory that is not one
+        Files.createDirectories(workspacePath.resolve(".git"));
 
         gitProperties = new GitProperties(
                 "file://" + tempDir.resolve("remote.git"),
@@ -389,6 +392,16 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("Should refuse to write into a workspace that no longer exists")
+        void saveRefusesDeletedWorkspace() throws IOException {
+            // Idle cleanup can remove the clone between the request and the lock
+            Files.delete(workspacePath.resolve(".git"));
+
+            assertThrows(WorkspaceNotFoundException.class, () ->
+                    flowService.saveFlow(workspace, "payment", createValidDeploymentData("payment")));
+        }
+
+        @Test
         @DisplayName("Should throw validation error for invalid flow data")
         void saveFlowInvalidData() {
             ThubDeploymentData emptyData = new ThubDeploymentData(
@@ -404,7 +417,7 @@ class FlowServiceImplTest {
         @DisplayName("Should create THUB directory if not exists")
         void saveFlowCreatesDirectory() throws IOException {
             Path newWorkspacePath = tempDir.resolve("new-workspace");
-            Files.createDirectories(newWorkspacePath);
+            Files.createDirectories(newWorkspacePath.resolve(".git"));
             WorkspaceInfo newWorkspace = new WorkspaceInfo(
                     "new-workspace", "user2", "feature/new",
                     newWorkspacePath, Instant.now(), Instant.now()

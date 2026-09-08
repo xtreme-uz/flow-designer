@@ -42,6 +42,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -66,11 +67,13 @@ public class GitServiceImpl implements GitService {
     private static final String WORKSPACE_METADATA_FILE = "flowdesigner-workspace.properties";
     private static final String THUB_DIR = "THUB";
     private static final int FETCH_TIMEOUT_SECONDS = 10;
+    private static final Duration FETCH_INTERVAL = Duration.ofSeconds(30);
 
     private final GitProperties properties;
     private final ConcurrentHashMap<String, ReentrantLock> workspaceLocks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WorkspaceInfo> workspaces = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Git> gitInstances = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Instant> lastFetchAt = new ConcurrentHashMap<>();
 
     private Git mainRepo;
     private CredentialsProvider credentialsProvider;
@@ -228,7 +231,12 @@ public class GitServiceImpl implements GitService {
         Git git = null;
         try {
             git = Git.open(workspacePath.toFile());
-            String branchName = git.getRepository().getBranch();
+            // On a detached HEAD getBranch() answers with a commit id, which would
+            // register the workspace under an id nobody can ask for again
+            String fullBranch = git.getRepository().getFullBranch();
+            String branchName = fullBranch != null && fullBranch.startsWith(Constants.R_HEADS)
+                    ? fullBranch.substring(Constants.R_HEADS.length())
+                    : readWorkspaceBranch(workspacePath).orElse(null);
             if (branchName == null || branchName.isBlank()) {
                 log.warn("Cannot determine branch for workspace at {}, skipping", workspacePath);
                 git.close();
@@ -306,6 +314,14 @@ public class GitServiceImpl implements GitService {
     }
 
     private Optional<String> readWorkspaceUserId(Path workspacePath) {
+        return readWorkspaceMetadata(workspacePath, "userId");
+    }
+
+    private Optional<String> readWorkspaceBranch(Path workspacePath) {
+        return readWorkspaceMetadata(workspacePath, "branchName");
+    }
+
+    private Optional<String> readWorkspaceMetadata(Path workspacePath, String key) {
         Path metadataFile = workspacePath.resolve(GIT_DIR).resolve(WORKSPACE_METADATA_FILE);
         if (!Files.exists(metadataFile)) {
             return Optional.empty();
@@ -317,8 +333,8 @@ public class GitServiceImpl implements GitService {
             log.warn("Failed to read workspace metadata at {}", metadataFile, e);
             return Optional.empty();
         }
-        String userId = props.getProperty("userId");
-        return userId != null && !userId.isBlank() ? Optional.of(userId) : Optional.empty();
+        String value = props.getProperty(key);
+        return value != null && !value.isBlank() ? Optional.of(value) : Optional.empty();
     }
 
     /**
@@ -523,18 +539,35 @@ public class GitServiceImpl implements GitService {
                 // branch's
                 git.branchCreate().setName(branchName).call();
 
-                var pushCommand = git.push()
-                        .setRefSpecs(new RefSpec(Constants.R_HEADS + branchName
-                                + ":" + Constants.R_HEADS + branchName));
-                if (credentialsProvider != null) {
-                    pushCommand.setCredentialsProvider(credentialsProvider);
+                try {
+                    var pushCommand = git.push()
+                            .setRefSpecs(new RefSpec(Constants.R_HEADS + branchName
+                                    + ":" + Constants.R_HEADS + branchName));
+                    if (credentialsProvider != null) {
+                        pushCommand.setCredentialsProvider(credentialsProvider);
+                    }
+                    verifyPushResults(pushCommand.call(), workspace);
+                } catch (RuntimeException | GitAPIException e) {
+                    // Leave no half-created branch behind, or retrying the same
+                    // name fails on the local ref rather than the real problem
+                    deleteLocalBranch(git, branchName);
+                    throw e;
                 }
-                verifyPushResults(pushCommand.call(), workspace);
                 updateLastAccessed(workspace);
+            } catch (TransportException e) {
+                throw new GitAuthenticationException("Failed to publish branch: " + branchName, e);
             } catch (GitAPIException e) {
                 throw new GitOperationException("Failed to create branch: " + branchName, e);
             }
         });
+    }
+
+    private void deleteLocalBranch(Git git, String branchName) {
+        try {
+            git.branchDelete().setBranchNames(branchName).setForce(true).call();
+        } catch (GitAPIException e) {
+            log.warn("Failed to remove local branch {} after a failed publish", branchName, e);
+        }
     }
 
     @Override
@@ -769,6 +802,20 @@ public class GitServiceImpl implements GitService {
     }
 
     /**
+     * Refreshes the remote-tracking refs at most once per
+     * {@link #FETCH_INTERVAL}, so a status call right after a save does not wait
+     * on the network.
+     */
+    private void fetchIfStale(Git git, WorkspaceInfo workspace) {
+        Instant last = lastFetchAt.get(workspace.id());
+        if (last != null && last.isAfter(Instant.now().minus(FETCH_INTERVAL))) {
+            return;
+        }
+        lastFetchAt.put(workspace.id(), Instant.now());
+        fetchQuietly(git, workspace);
+    }
+
+    /**
      * Updates the remote-tracking refs, tolerating an unreachable remote: the
      * status is still useful offline, only the behind count goes stale.
      */
@@ -858,10 +905,11 @@ public class GitServiceImpl implements GitService {
             try {
                 // Without a fetch the remote-tracking refs never move, so the behind
                 // count would always read zero and a user would only learn of a
-                // teammate's push when their own is rejected. Inside the lock: it
-                // rewrites refs that a concurrent pull or push on this clone uses.
-                // The timeout bounds how long a slow remote can hold the lock.
-                fetchQuietly(git, workspace);
+                // teammate's push when their own is rejected. It runs inside the
+                // lock because it rewrites refs a concurrent pull or push uses, and
+                // is throttled so the status call after every save does not pay for
+                // a round-trip to the remote.
+                fetchIfStale(git, workspace);
 
                 // Only THUB/ is ever staged, so only THUB/ decides whether the
                 // workspace is clean — otherwise an unrelated file would leave the
@@ -912,6 +960,7 @@ public class GitServiceImpl implements GitService {
                 throw new WorkspaceNotFoundException(workspaceId);
             }
 
+            lastFetchAt.remove(workspaceId);
             Git git = gitInstances.remove(workspaceId);
             if (git != null) {
                 git.close();

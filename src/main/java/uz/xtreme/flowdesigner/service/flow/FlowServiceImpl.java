@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.flow;
 import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
+import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -102,6 +103,8 @@ public class FlowServiceImpl implements FlowService {
     }
 
     private void saveFlowLocked(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
+        requireWorkspaceOnDisk(workspace);
+
         List<String> nameErrors = validateFlowName(flowTypeId);
         if (!nameErrors.isEmpty()) {
             throw new FlowValidationException(nameErrors);
@@ -168,6 +171,7 @@ public class FlowServiceImpl implements FlowService {
     }
 
     private boolean deleteFlowLocked(WorkspaceInfo workspace, String flowTypeId) {
+        requireWorkspaceOnDisk(workspace);
         Path basePath = workspace.path();
         String flowTypeKey = ThubDataService.flowTypeKey(flowTypeId);
 
@@ -388,6 +392,18 @@ public class FlowServiceImpl implements FlowService {
     }
 
     // ==================== Private Helper Methods ====================
+
+    /**
+     * Fails a write whose workspace is no longer a git clone. Idle cleanup may
+     * have removed it between the request arriving and the lock being taken;
+     * writing anyway would recreate a bare THUB/ directory outside any
+     * repository and report success while the data is unreachable.
+     */
+    private void requireWorkspaceOnDisk(WorkspaceInfo workspace) {
+        if (!java.nio.file.Files.isDirectory(workspace.path().resolve(".git"))) {
+            throw new WorkspaceNotFoundException(workspace.id());
+        }
+    }
 
     private List<FlowSummary> listFlowsFromPath(Path basePath) {
         Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(basePath);
