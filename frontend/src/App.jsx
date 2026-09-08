@@ -385,11 +385,12 @@ export default function App() {
       // A flow opened from the main branch may or may not already exist in this
       // workspace — a feature branch cut from main carries all of them. Update
       // first and create only when it really is not there.
+      let summary;
       try {
-        await api.updateFlow(currentFlowName, deploymentData, branch);
+        summary = await api.updateFlow(currentFlowName, deploymentData, branch);
       } catch (err) {
         if (err.status !== 404) throw err;
-        await api.createFlow(currentFlowName, deploymentData, branch);
+        summary = await api.createFlow(currentFlowName, deploymentData, branch);
       }
       setOpenedFromMain(false);
       // The canvas file holds the arrangement and the flow's node list, so losing
@@ -404,7 +405,16 @@ export default function App() {
           10000
         );
       }
-      setCurrentDeploymentData(deploymentData);
+      // The server owns the audit fields, so take back what it stamped instead
+      // of showing the client's copy in the metadata panel until the next reload
+      setCurrentDeploymentData({
+        ...deploymentData,
+        flowType: {
+          ...deploymentData.flowType,
+          lastModifiedBy: summary?.lastModifiedBy ?? deploymentData.flowType?.lastModifiedBy,
+          lastModifiedAt: summary?.lastModifiedAt ?? deploymentData.flowType?.lastModifiedAt,
+        },
+      });
       markAsSaved();
       refreshStatusQuietly();
       toast.success('Flow saved successfully!');

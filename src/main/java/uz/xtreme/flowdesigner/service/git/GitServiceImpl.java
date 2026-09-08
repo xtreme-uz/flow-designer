@@ -224,6 +224,14 @@ public class GitServiceImpl implements GitService {
         // does the same; without this they can run at the same time
         mainRepoLock.lock();
         try {
+            // Concurrent readers all pass the check above and queue here; without
+            // re-reading the stamp under the lock each of them still pulls
+            Instant lastUnderLock = lastMainRepoPull;
+            if (!force && lastUnderLock != null
+                    && lastUnderLock.isAfter(Instant.now().minus(MAIN_REPO_PULL_INTERVAL))) {
+                return;
+            }
+
             // Check if repo has any commits - skip pull for empty repos
             ObjectId head = mainRepo.getRepository().resolve("HEAD");
             if (head == null) {

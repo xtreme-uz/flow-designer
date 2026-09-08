@@ -76,8 +76,11 @@ flow-designer/
     │   │   │       ├── FlowServiceImpl.java # Flow CRUD using THUB shared data files
     │   │   │       ├── ThubDataService.java # Interface for THUB data file I/O
     │   │   │       ├── ThubDataServiceImpl.java # Read/write shared THUB data files
+    │   │   │       ├── FlowLayoutService.java   # Interface for canvas layout I/O
+    │   │   │       ├── FlowLayoutServiceImpl.java # .flowdesigner/flows/{id}.json
     │   │   │       └── dto/
     │   │   │           ├── FlowSummary.java     # Flow listing summary
+    │   │   │           ├── FlowLayout.java      # Node positions + the flow's node list
     │   │   │           └── thub/                # THUB deployment DTOs
     │   │   │               ├── ThubDeploymentData.java  # Complete flow data
     │   │   │               ├── ThubFlowType.java        # flow_type + audit info
@@ -107,6 +110,7 @@ flow-designer/
             ├── git/OAuth2UserGitCredentialsTest.java
             └── flow/
                 ├── FlowServiceImplTest.java
+                ├── FlowLayoutServiceImplTest.java
                 └── ThubDataServiceImplTest.java
 ```
 
@@ -142,7 +146,7 @@ java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
 ### Run Tests
 
 ```bash
-# All tests — 152 backend (JUnit) + 36 frontend (vitest, jsdom)
+# All tests — 165 backend (JUnit) + 38 frontend (vitest, jsdom)
 cd flow-designer
 mvn test
 
@@ -244,8 +248,8 @@ DELETE /api/workspaces                   # Delete workspace
 GET    /api/workspaces/statuses          # List all statuses (ThubFlowStatus[])
 GET    /api/workspaces/flows             # List workspace flows (FlowSummary[])
 GET    /api/workspaces/flows/{name}      # Get flow → ThubDeploymentData
-POST   /api/workspaces/flows             # Create flow → { flowTypeId, deploymentData }
-PUT    /api/workspaces/flows/{name}      # Update flow → { deploymentData }
+POST   /api/workspaces/flows             # Create flow → FlowSummary
+PUT    /api/workspaces/flows/{name}      # Update flow → FlowSummary
 DELETE /api/workspaces/flows/{name}      # Delete flow
 POST   /api/workspaces/flows/{name}/rename   # Rename flow
 GET    /api/workspaces/flows/{name}/layout   # Canvas layout (FlowLayout)
