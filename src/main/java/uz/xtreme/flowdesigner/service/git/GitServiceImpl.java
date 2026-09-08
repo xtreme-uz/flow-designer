@@ -484,7 +484,11 @@ public class GitServiceImpl implements GitService {
                 requireCleanTreeForPull(git);
 
                 ObjectId headBeforePull = git.getRepository().resolve(Constants.HEAD);
-                var pullCommand = git.pull();
+                var pullCommand = git.pull()
+                        // Never inherit pull.rebase from the server user's global git
+                        // config: a conflicting rebase leaves a detached HEAD and a
+                        // rebase in progress, which the merge recovery below cannot undo
+                        .setRebase(false);
                 if (credentialsProvider != null) {
                     pullCommand.setCredentialsProvider(credentialsProvider);
                 }
@@ -1019,11 +1023,11 @@ public class GitServiceImpl implements GitService {
     @Override
     public void cleanupWorkspace(String userId, String branchName) {
         String workspaceId = WorkspaceInfo.createId(userId, branchName);
-        ReentrantLock lock = workspaceLocks.get(workspaceId);
+        // computeIfAbsent, not get: a workspace restored after a restart has no
+        // lock entry yet, and deleting it unlocked races with a save in flight
+        ReentrantLock lock = workspaceLocks.computeIfAbsent(workspaceId, k -> new ReentrantLock());
 
-        if (lock != null) {
-            lock.lock();
-        }
+        lock.lock();
         try {
             WorkspaceInfo workspace = workspaces.remove(workspaceId);
             if (workspace == null) {
@@ -1042,9 +1046,7 @@ public class GitServiceImpl implements GitService {
             // deletion. One idle lock per user/branch is cheap.
             log.info("Cleaned up workspace: {}", workspaceId);
         } finally {
-            if (lock != null) {
-                lock.unlock();
-            }
+            lock.unlock();
         }
     }
 
