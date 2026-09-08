@@ -82,6 +82,14 @@ public interface GitService {
     void add(WorkspaceInfo workspace, String... filePatterns);
 
     /**
+     * Stages everything this application writes — the THUB data files and the
+     * canvas layouts beside them — and nothing else in the clone.
+     *
+     * @param workspace the workspace
+     */
+    void addManagedFiles(WorkspaceInfo workspace);
+
+    /**
      * Commits staged changes with optimistic locking and full audit trail.
      * Sets both author and committer to the user, and appends audit metadata as trailers.
      *

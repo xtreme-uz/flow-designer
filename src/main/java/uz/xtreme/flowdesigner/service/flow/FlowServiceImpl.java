@@ -4,6 +4,7 @@ import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
+import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -39,11 +40,14 @@ public class FlowServiceImpl implements FlowService {
     private final GitProperties gitProperties;
     private final GitService gitService;
     private final ThubDataService thubDataService;
+    private final FlowLayoutService flowLayoutService;
 
-    public FlowServiceImpl(GitProperties gitProperties, GitService gitService, ThubDataService thubDataService) {
+    public FlowServiceImpl(GitProperties gitProperties, GitService gitService,
+                           ThubDataService thubDataService, FlowLayoutService flowLayoutService) {
         this.gitProperties = gitProperties;
         this.gitService = gitService;
         this.thubDataService = thubDataService;
+        this.flowLayoutService = flowLayoutService;
     }
 
     // ==================== Read Operations (Main Repository) ====================
@@ -92,6 +96,17 @@ public class FlowServiceImpl implements FlowService {
         return flowTypes.containsKey(ThubDataService.flowTypeKey(flowTypeId));
     }
 
+    @Override
+    public FlowLayout getLayout(WorkspaceInfo workspace, String flowTypeId) {
+        return flowLayoutService.read(workspace.path(), flowTypeId);
+    }
+
+    @Override
+    public FlowLayout getLayoutFromMain(String flowTypeId) {
+        gitService.pullMainRepo();
+        return flowLayoutService.read(Path.of(gitProperties.mainRepoPath()), flowTypeId);
+    }
+
     // ==================== Write Operations (Workspace Only) ====================
 
     @Override
@@ -99,6 +114,31 @@ public class FlowServiceImpl implements FlowService {
         // Five files are read and rewritten here; without the workspace lock a
         // concurrent save on the same workspace interleaves and loses records
         gitService.withWorkspaceLock(workspace, () -> saveFlowLocked(workspace, flowTypeId, deploymentData));
+    }
+
+    @Override
+    public void createFlow(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
+        gitService.withWorkspaceLock(workspace, () -> {
+            if (flowExists(workspace, flowTypeId)) {
+                throw new FlowValidationException("Flow with name '" + flowTypeId + "' already exists");
+            }
+            saveFlowLocked(workspace, flowTypeId, deploymentData);
+        });
+    }
+
+    @Override
+    public void saveLayout(WorkspaceInfo workspace, String flowTypeId, FlowLayout layout) {
+        gitService.withWorkspaceLock(workspace, () -> {
+            requireWorkspaceOnDisk(workspace);
+            List<String> nameErrors = validateFlowName(flowTypeId);
+            if (!nameErrors.isEmpty()) {
+                throw new FlowValidationException(nameErrors);
+            }
+            if (!flowExists(workspace, flowTypeId)) {
+                throw new FlowNotFoundException(flowTypeId, workspace.id());
+            }
+            flowLayoutService.write(workspace.path(), flowTypeId, layout);
+        });
     }
 
     private void saveFlowLocked(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
@@ -229,6 +269,7 @@ public class FlowServiceImpl implements FlowService {
         thubDataService.writeFlowAssignments(basePath, assignments);
 
         // Note: FlowStatuses are SHARED and NOT removed (they may be used by other flows)
+        flowLayoutService.delete(basePath, flowTypeId);
 
         log.info("Deleted flow '{}' from workspace '{}' (statuses preserved)", flowTypeId, workspace.id());
         return true;
@@ -313,6 +354,13 @@ public class FlowServiceImpl implements FlowService {
         // flow missing from files already written if the sequence broke midway
         requireWorkspaceOnDisk(workspace);
         writeFlow(workspace, newFlowTypeId, renamedData, oldFlowTypeId);
+
+        // The canvas layout belongs to the flow, not to its name
+        FlowLayout layout = flowLayoutService.read(workspace.path(), oldFlowTypeId);
+        if (!layout.isEmpty()) {
+            flowLayoutService.write(workspace.path(), newFlowTypeId, layout);
+        }
+        flowLayoutService.delete(workspace.path(), oldFlowTypeId);
         log.info("Renamed flow '{}' to '{}' in workspace '{}'", oldFlowTypeId, newFlowTypeId, workspace.id());
     }
 
@@ -469,8 +517,11 @@ public class FlowServiceImpl implements FlowService {
         List<ThubFlowAssignment> assignments = ownedBy(allAssignments, flowTypeId,
                 ThubFlowAssignment::flowTypeId, null);
 
-        // Collect status IDs used by this flow
-        Set<String> usedStatusIds = new HashSet<>();
+        // Collect status IDs used by this flow. THUB has no per-flow status table,
+        // so a status the flow owns but has not wired to an action or a transition
+        // yet is only known from the canvas layout — without it, a node the user
+        // named but has not connected disappears on the next open.
+        Set<String> usedStatusIds = new HashSet<>(flowLayoutService.read(basePath, flowTypeId).statusIds());
         if (flowType.initialFlowStatusId() != null) usedStatusIds.add(flowType.initialFlowStatusId());
         if (flowType.finalFlowStatusId() != null) usedStatusIds.add(flowType.finalFlowStatusId());
         actions.forEach(a -> { if (a.flowStatusId() != null) usedStatusIds.add(a.flowStatusId()); });

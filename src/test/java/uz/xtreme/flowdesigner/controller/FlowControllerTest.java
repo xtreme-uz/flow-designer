@@ -52,7 +52,7 @@ class FlowControllerTest {
 
     @BeforeEach
     void setUp() {
-        var gitProperties = new GitProperties(null, null, null, "main", null, null);
+        var gitProperties = new GitProperties(null, null, null, "main", false, null, null);
         controller = new FlowController(flowService, gitService, gitProperties);
         workspace = new WorkspaceInfo(
                 "testuser-feature_test",
@@ -272,7 +272,6 @@ class FlowControllerTest {
         @DisplayName("POST /api/workspaces/flows - create flow with ThubDeploymentData")
         void createFlow() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
 
             ResponseEntity<FlowSummary> response = controller.createFlow(
                     USER_ID, BRANCH,
@@ -284,7 +283,7 @@ class FlowControllerTest {
             assertEquals(FLOW_NAME, response.getBody().flowTypeId());
 
             ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            verify(flowService).createFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
             assertEquals(deploymentData.flowStatuses(), saved.getValue().flowStatuses());
             assertEquals(deploymentData.flowStatusTransitions(), saved.getValue().flowStatusTransitions());
         }
@@ -300,13 +299,12 @@ class FlowControllerTest {
                             Map.of()),
                     List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
                     List.of(), List.of(), List.of());
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
 
             controller.createFlow(USER_ID, BRANCH,
                     new FlowController.CreateFlowRequest(FLOW_NAME, spoofed));
 
             ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
-            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            verify(flowService).createFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
             ThubFlowType stored = saved.getValue().flowType();
             assertEquals(USER_ID, stored.createdBy());
             assertEquals(USER_ID, stored.lastModifiedBy());
@@ -372,9 +370,11 @@ class FlowControllerTest {
         }
 
         @Test
-        @DisplayName("POST /api/workspaces/flows - throws when flow exists")
+        @DisplayName("POST /api/workspaces/flows - propagates the duplicate-name rejection")
         void createFlowAlreadyExists() {
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
+            // The check lives in the service, under the same lock as the write
+            doThrow(new FlowValidationException("Flow with name 'test-flow' already exists"))
+                    .when(flowService).createFlow(eq(workspace), eq(FLOW_NAME), any(ThubDeploymentData.class));
 
             assertThrows(FlowValidationException.class, () ->
                     controller.createFlow(USER_ID, BRANCH,
@@ -533,7 +533,7 @@ class FlowControllerTest {
 
             assertEquals(commitHash, result.commitHash());
             assertEquals(message, result.message());
-            verify(gitService).add(workspace, "THUB/");
+            verify(gitService).addManagedFiles(workspace);
             verify(gitService).commit(eq(workspace), eq(message), any(AuditInfo.class), isNull());
         }
 

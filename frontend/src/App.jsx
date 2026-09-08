@@ -13,7 +13,7 @@ import '@xyflow/react/dist/style.css';
 import { useWorkspace } from './contexts/WorkspaceContext';
 import { useToast } from './contexts/ToastContext';
 import * as api from './services/api';
-import { thubToReactFlow, reactFlowToThub } from './utils/thubConverter';
+import { thubToReactFlow, reactFlowToThub, reactFlowToLayout } from './utils/thubConverter';
 import { applyDagreLayout } from './utils/layoutUtils';
 
 import InitialNode from './components/nodes/InitialNode';
@@ -40,6 +40,9 @@ export default function App() {
 
   // Flow state
   const [currentFlowName, setCurrentFlowName] = useState(null);
+  // Where the open flow came from: a main-branch flow saved on a feature branch
+  // is a copy into the workspace, not an update of something already there
+  const [currentFlowSource, setCurrentFlowSource] = useState('workspace');
   const [currentDeploymentData, setCurrentDeploymentData] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
@@ -296,27 +299,36 @@ export default function App() {
   };
 
   // Flow management functions
-  const loadFlow = async (flowName) => {
+  /**
+   * @param source 'main' or 'workspace' — which listing the flow was picked from.
+   *   The flow list offers both while on a feature branch, so guessing from the
+   *   current branch fetches the wrong copy, or 404s on a main-only flow.
+   */
+  const loadFlow = async (flowName, source = (isMainBranch ? 'main' : 'workspace')) => {
     // Returns whether the flow was actually opened, so the caller's modal can
     // stay put when the user backs out of the unsaved-changes prompt
     if (!confirmDiscardChanges('Open another flow')) return false;
     setLoading(true);
     try {
-      let deploymentData;
-      if (isMainBranch) {
-        deploymentData = await api.getFlowFromMain(flowName);
-      } else {
-        deploymentData = await api.getWorkspaceFlow(flowName, branch);
-      }
+      const [deploymentData, layout] = await Promise.all([
+        source === 'main'
+          ? api.getFlowFromMain(flowName)
+          : api.getWorkspaceFlow(flowName, branch),
+        // A missing or unreadable layout only costs the saved positions
+        (source === 'main'
+          ? api.getFlowLayoutFromMain(flowName)
+          : api.getWorkspaceFlowLayout(flowName, branch)).catch(() => null),
+      ]);
 
       // Store the raw deployment data for metadata editing
       setCurrentDeploymentData(deploymentData);
 
-      // Convert THUB data to React Flow nodes/edges with dagre layout
-      const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
+      // Convert THUB data to React Flow nodes/edges, keeping saved positions
+      const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData, layout);
       setNodes(flowNodes);
       setEdges(flowEdges);
       setCurrentFlowName(flowName);
+      setCurrentFlowSource(source);
       markAsSaved();
       fetchStatuses();
       return true;
@@ -359,7 +371,20 @@ export default function App() {
         nodes, edges, currentFlowName, existingFlowType, existingAssignments
       );
 
-      await api.updateFlow(currentFlowName, deploymentData, branch);
+      if (currentFlowSource === 'main') {
+        // Opened from the main branch: the first save copies it into this workspace
+        await api.createFlow(currentFlowName, deploymentData, branch);
+        setCurrentFlowSource('workspace');
+      } else {
+        await api.updateFlow(currentFlowName, deploymentData, branch);
+      }
+      // Positions are the user's arrangement, not THUB data — stored separately.
+      // The flow itself is already saved, so a failure here costs the layout only.
+      try {
+        await api.saveWorkspaceFlowLayout(currentFlowName, reactFlowToLayout(nodes), branch);
+      } catch (layoutError) {
+        toast.warning(`Flow saved, but the canvas layout was not: ${layoutError.message}`);
+      }
       setCurrentDeploymentData(deploymentData);
       markAsSaved();
       refreshStatusQuietly();
@@ -409,6 +434,7 @@ export default function App() {
       // Convert to React Flow for canvas display
       const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
       setCurrentFlowName(flowName);
+      setCurrentFlowSource('workspace');
       setCurrentDeploymentData(deploymentData);
       setNodes(flowNodes);
       setEdges(flowEdges);

@@ -271,8 +271,8 @@ export default function Header({
       {showFlowListModal && (
         <FlowListModal
           onClose={() => setShowFlowListModal(false)}
-          onLoadFlow={async (flowName) => {
-            if (await onLoadFlow(flowName)) {
+          onLoadFlow={async (flowName, source) => {
+            if (await onLoadFlow(flowName, source)) {
               setShowFlowListModal(false);
             }
           }}
@@ -391,7 +391,7 @@ function FlowListModal({ onClose, onLoadFlow }) {
                 <div
                   key={flow.name}
                   className="flow-item"
-                  onClick={() => onLoadFlow(flow.name)}
+                  onClick={() => onLoadFlow(flow.name, viewSource)}
                 >
                   <div className="flow-item-name">{flow.name}</div>
                   {flow.description && (

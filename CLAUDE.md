@@ -11,10 +11,12 @@ A visual editor for payment state machines. Users create payment flows (nodes + 
 ```
 flow-designer/
 ├── LICENSE                          # MIT
+├── .github/workflows/ci.yml         # CI: mvn verify on JDK 25 (backend + frontend)
 ├── pom.xml                          # Maven config (builds frontend too, clean plugin)
 ├── run-dev.sh                       # Dev startup (HTTPS, GitLab OAuth2, self-signed cert)
 ├── frontend/                        # React app
 │   ├── package.json                 # @xyflow/react, react 19.2, @dagrejs/dagre 3
+│   ├── vitest.setup.js              # jsdom + testing-library setup
 │   ├── vite.config.js               # Proxy /api → localhost:8080
 │   └── src/
 │       ├── App.jsx                  # Main canvas + state (nodes, edges, flow CRUD)
@@ -22,7 +24,7 @@ flow-designer/
 │       ├── index.css
 │       ├── services/api.js          # All REST API calls (ThubDeploymentData format)
 │       ├── utils/
-│       │   ├── __tests__/           # vitest specs (thubConverter round-trip)
+│       │   ├── __tests__/           # vitest specs (thubConverter round-trip, layout)
 │       │   ├── thubConverter.js     # THUB ↔ React Flow conversion
 │       │   └── layoutUtils.js       # dagre auto-layout
 │       ├── contexts/
@@ -30,6 +32,7 @@ flow-designer/
 │       │   ├── WorkspaceContext.jsx  # Branch/workspace state (userId from AuthContext)
 │       │   └── ToastContext.jsx      # Toast notifications
 │       └── components/
+│           ├── __tests__/           # component specs (editors, GitPanel, LoginPage, Toolbar)
 │           ├── LoginPage.jsx/.css   # Login screen (GitLab OAuth2 redirect button)
 │           ├── Header.jsx/.css      # Branch selector, flow list, save, delete, user menu
 │           ├── GitPanel.jsx/.css    # Commit/push/pull, git status
@@ -65,6 +68,8 @@ flow-designer/
     │   │   │   │   ├── GitServiceImpl.java  # JGit operations + workspace mgmt
     │   │   │   │   ├── WorkspaceInfo.java   # Workspace metadata record
     │   │   │   │   ├── WorkspaceStatus.java # Uncommitted files + ahead/behind counts
+    │   │   │   │   ├── UserGitCredentials.java      # Per-request Git credentials
+    │   │   │   │   ├── OAuth2UserGitCredentials.java # …from the user's OAuth2 token
     │   │   │   │   └── AuditInfo.java       # Commit audit trail
     │   │   │   └── flow/
     │   │   │       ├── FlowService.java     # Interface
@@ -99,6 +104,7 @@ flow-designer/
         ├── config/AuthPropertiesTest.java
         └── service/
             ├── git/GitServiceImplTest.java
+            ├── git/OAuth2UserGitCredentialsTest.java
             └── flow/
                 ├── FlowServiceImplTest.java
                 └── ThubDataServiceImplTest.java
@@ -136,7 +142,7 @@ java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
 ### Run Tests
 
 ```bash
-# All tests — 127 backend (JUnit) + 8 frontend (vitest)
+# All tests — 152 backend (JUnit) + 36 frontend (vitest, jsdom)
 cd flow-designer
 mvn test
 
@@ -157,6 +163,8 @@ THUB data = **single source of truth**. React Flow canvas is derived via dagre a
 
 ### Git Repository Structure
 ```
+.flowdesigner/                       # Flow Designer's own state, not THUB data
+└── flows/{flowTypeId}.json          # Canvas positions + the flow's node list
 THUB/
 ├── FlowType-metadata.json           # Static configurator metadata
 ├── FlowType-definition.json         # Table schema
@@ -198,6 +206,10 @@ Save: React Flow canvas → reactFlowToThub() → ThubDeploymentData → merge i
   result types belong on a single transition; a duplicate pair is rejected by validation
 - **Assignments are not editable on the canvas** — they are read with the flow and written back unchanged
 - **metadata.json + definition.json are NOT managed by Flow Designer** — they belong in the configurator-conf repository
+- **`.flowdesigner/` is ours, `THUB/` is the deployer's** — both are staged on commit and both count towards the
+  workspace being clean; anything else in the clone is reported as unmanaged and blocks a pull
+- **A flow's node list lives in its layout file** — THUB has no per-flow status table, so a status with no action
+  and no transition is only known from there; without it such a node disappears when the flow is reopened
 
 ## REST API
 
@@ -214,6 +226,7 @@ GET  /api/branches                       # List all remote branches
 ```
 GET  /api/flows                          # List all flows (FlowSummary[])
 GET  /api/flows/{name}                   # Get flow (ThubDeploymentData)
+GET  /api/flows/{name}/layout            # Canvas layout (FlowLayout)
 GET  /api/statuses                       # List all statuses (ThubFlowStatus[])
 POST /api/flows/validate                 # Validate flow (ThubDeploymentData → ValidationResponse)
 ```
@@ -235,6 +248,8 @@ POST   /api/workspaces/flows             # Create flow → { flowTypeId, deploym
 PUT    /api/workspaces/flows/{name}      # Update flow → { deploymentData }
 DELETE /api/workspaces/flows/{name}      # Delete flow
 POST   /api/workspaces/flows/{name}/rename   # Rename flow
+GET    /api/workspaces/flows/{name}/layout   # Canvas layout (FlowLayout)
+PUT    /api/workspaces/flows/{name}/layout   # Save canvas layout
 ```
 
 ### Git Operations
@@ -257,6 +272,7 @@ POST /api/workspaces/branch              # Create new branch
 | `GIT_USERNAME` | (empty) | Git HTTP auth username |
 | `GIT_TOKEN` | (empty) | Git HTTP auth token |
 | `GIT_SSH_KEY_PATH` | (empty) | Path to SSH key |
+| `GIT_USE_USER_CREDENTIALS` | `false` | Push/pull with the signed-in user's OAuth2 token instead of the service account. Needs a scope granting repository write access (GitLab: `write_repository`) |
 | `AUTH_ALLOWED_USERNAMES` | (empty) | Comma-separated usernames allowed to sign in (empty = anyone the provider authenticates) |
 | `AUTH_ALLOWED_EMAIL_DOMAINS` | (empty) | Comma-separated email domains allowed to sign in |
 | `GITLAB_CLIENT_ID` | (empty) | GitLab OAuth2 application ID |
@@ -277,11 +293,12 @@ POST /api/workspaces/branch              # Create new branch
 | Flow canvas | FlowType (initial/final status IDs) |
 | Node action config | FlowStatusAction (module, action, timeouts) |
 | Edge label | actionresulttypeids (comma-separated, multi-select) |
-| Node positions | Computed by dagre (not stored) |
+| Node positions | Saved in `.flowdesigner/flows/{id}.json`; dagre positions anything not yet saved |
 
 ### Frontend Conversion (thubConverter.js)
-- `thubToReactFlow(deploymentData)` → `{ nodes, edges }` with dagre positions
-- `reactFlowToThub(nodes, edges, flowTypeId, existingFlowType)` → `ThubDeploymentData`
+- `thubToReactFlow(deploymentData, layout)` → `{ nodes, edges }`; saved positions win, dagre fills the rest
+- `reactFlowToThub(nodes, edges, flowTypeId, existingFlowType, existingAssignments)` → `ThubDeploymentData`
+- `reactFlowToLayout(nodes)` → `FlowLayout` (positions + the flow's node list)
 
 ### Backend Services
 - **ThubDataService** — reads/writes shared THUB data.json files (5 tables × 3 files)
@@ -296,7 +313,10 @@ POST /api/workspaces/branch              # Create new branch
 - Workspace identity is stored in `.git/flowdesigner-workspace.properties` (never in the working tree); the branch
   is read back from the repository, so directory names are never parsed
 - Push/pull check `RemoteRefUpdate` / `PullResult` and raise 409 on rejection or conflict
-- Commits set `setSign(false)` — the server user's global `commit.gpgsign` must not break every commit
+- Commits set `setSign(false)` and pulls `setRebase(false)` — the server user's global git config must not
+  change how the application behaves
+- Workspace git operations use the signed-in user's OAuth2 token when `app.git.use-user-credentials` is on,
+  falling back to the service account; scheduled main-repo work always uses the service account
 - Idle cleanup skips workspaces with uncommitted or unpushed work
 - Scheduled main repo refresh every 5 min
 - Post-push main repo refresh
@@ -353,6 +373,10 @@ POST /api/workspaces/branch              # Create new branch
 - [x] GitLab OAuth2 authentication
 - [x] Login allowlist (username / email domain)
 - [ ] Additional OAuth2 providers (GitHub, Bitbucket) — see `OAuth2UserAttributes`
+- [x] CI (GitHub Actions)
+- [x] Canvas layout persistence
+- [x] Per-user Git identity for push (opt-in)
+- [ ] Multi-instance deployment — workspaces, locks and clones are per-process today
 
 ## Conventions
 - Flow names: start with letter, letters/numbers/underscores/hyphens (e.g., `payment-flow`, `debit-credit-reversal`)

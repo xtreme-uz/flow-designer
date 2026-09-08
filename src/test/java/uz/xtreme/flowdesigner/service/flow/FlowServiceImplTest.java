@@ -4,6 +4,7 @@ import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
+import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -45,6 +46,7 @@ class FlowServiceImplTest {
     private Path workspacePath;
     private GitProperties gitProperties;
     private ThubDataServiceImpl thubDataService;
+    private FlowLayoutServiceImpl flowLayoutService;
     private FlowServiceImpl flowService;
     private WorkspaceInfo workspace;
 
@@ -62,13 +64,15 @@ class FlowServiceImplTest {
                 mainRepoPath.toString(),
                 tempDir.resolve("workspaces").toString(),
                 "main",
+                false,
                 new GitProperties.Credentials(null, null, null),
                 new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
         );
 
         ObjectMapper objectMapper = new ObjectMapper();
         thubDataService = new ThubDataServiceImpl(objectMapper);
-        flowService = new FlowServiceImpl(gitProperties, gitService, thubDataService);
+        flowLayoutService = new FlowLayoutServiceImpl(objectMapper);
+        flowService = new FlowServiceImpl(gitProperties, gitService, thubDataService, flowLayoutService);
 
         workspace = new WorkspaceInfo(
                 "user1-feature_test",
@@ -142,6 +146,87 @@ class FlowServiceImplTest {
             transitions.put(ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()), t);
         }
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
+    }
+
+    // ==================== Layout Tests ====================
+
+    @Nested
+    @DisplayName("Layout Tests")
+    class LayoutTests {
+
+        @Test
+        @DisplayName("A status with no action and no transition survives a reload")
+        void unwiredStatusSurvivesReload() {
+            saveTestFlow(workspacePath, "payment");
+            // A node the user named but has not wired to anything yet
+            Map<String, ThubFlowStatus> statuses = thubDataService.readFlowStatuses(workspacePath);
+            statuses.put(ThubDataService.flowStatusKey("PARKED"), new ThubFlowStatus("PARKED", "Parked"));
+            thubDataService.writeFlowStatuses(workspacePath, statuses);
+
+            flowService.saveLayout(workspace, "payment", new FlowLayout(List.of(
+                    new FlowLayout.NodePosition("ACCEPTED", 0, 0),
+                    new FlowLayout.NodePosition("PARKED", 120, 240))));
+
+            Optional<ThubDeploymentData> reloaded = flowService.getFlow(workspace, "payment");
+
+            assertTrue(reloaded.isPresent());
+            assertTrue(reloaded.get().flowStatuses().stream().anyMatch(st -> "PARKED".equals(st.id())),
+                    "an unwired status is only known from the layout");
+        }
+
+        @Test
+        @DisplayName("Layouts are read back as they were written")
+        void layoutRoundTrip() {
+            saveTestFlow(workspacePath, "payment");
+            FlowLayout layout = new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80)));
+
+            flowService.saveLayout(workspace, "payment", layout);
+
+            FlowLayout stored = flowService.getLayout(workspace, "payment");
+            assertEquals(1, stored.nodes().size());
+            assertEquals("ACCEPTED", stored.nodes().get(0).statusId());
+            assertEquals(40, stored.nodes().get(0).x());
+        }
+
+        @Test
+        @DisplayName("A flow without a layout reads back empty rather than failing")
+        void missingLayoutIsEmpty() {
+            saveTestFlow(workspacePath, "payment");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Renaming a flow carries its layout to the new name")
+        void renameMovesLayout() {
+            saveTestFlow(workspacePath, "payment");
+            flowService.saveLayout(workspace, "payment",
+                    new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80))));
+
+            flowService.renameFlow(workspace, "payment", "payment-v2");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+            assertEquals(1, flowService.getLayout(workspace, "payment-v2").nodes().size());
+        }
+
+        @Test
+        @DisplayName("Deleting a flow removes its layout")
+        void deleteRemovesLayout() {
+            saveTestFlow(workspacePath, "payment");
+            flowService.saveLayout(workspace, "payment",
+                    new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80))));
+
+            flowService.deleteFlow(workspace, "payment");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Refuses a layout for a flow that does not exist")
+        void layoutRequiresTheFlow() {
+            assertThrows(FlowNotFoundException.class, () ->
+                    flowService.saveLayout(workspace, "missing-flow", FlowLayout.empty()));
+        }
     }
 
     // ==================== Flow Isolation Tests ====================
@@ -413,6 +498,15 @@ class FlowServiceImplTest {
                     flowService.saveFlow(workspace, "", data));
             assertThrows(FlowValidationException.class, () ->
                     flowService.saveFlow(workspace, "invalid name", data));
+        }
+
+        @Test
+        @DisplayName("Should refuse to create a flow that already exists")
+        void createRejectsDuplicateName() {
+            flowService.createFlow(workspace, "payment", createValidDeploymentData("payment"));
+
+            assertThrows(FlowValidationException.class, () ->
+                    flowService.createFlow(workspace, "payment", createValidDeploymentData("payment")));
         }
 
         @Test

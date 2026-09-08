@@ -176,6 +176,35 @@ export async function getWorkspaceFlow(flowName, branch) {
   return handleResponse(response);
 }
 
+/**
+ * Canvas layout (node positions + the flow's node list). Kept apart from the
+ * THUB data so the configuration deployer never sees it.
+ */
+export async function getFlowLayoutFromMain(flowName) {
+  const response = await fetch(`${API_BASE}/flows/${encodeURIComponent(flowName)}/layout`, {
+    credentials: 'include'
+  });
+  return handleResponse(response);
+}
+
+export async function getWorkspaceFlowLayout(flowName, branch) {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}/layout`, {
+    credentials: 'include',
+    headers: getReadHeaders(branch)
+  });
+  return handleResponse(response);
+}
+
+export async function saveWorkspaceFlowLayout(flowName, layout, branch) {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}/layout`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: getMutationHeaders(branch),
+    body: JSON.stringify(layout)
+  });
+  return handleResponse(response);
+}
+
 export async function createFlow(flowTypeId, deploymentData, branch) {
   const response = await fetch(`${API_BASE}/workspaces/flows`, {
     method: 'POST',

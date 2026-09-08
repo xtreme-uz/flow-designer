@@ -83,6 +83,7 @@ class GitServiceImplTest {
                 mainRepoPath.toString(),
                 workspacesPath.toString(),
                 "master",
+                false,
                 new GitProperties.Credentials(null, null, null),
                 new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
         );
@@ -315,6 +316,7 @@ class GitServiceImplTest {
                     mainRepoPath.toString(),
                     workspacesPath.toString(),
                     "master",
+                    false,
                     new GitProperties.Credentials(null, null, null),
                     new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
             ));

@@ -49,6 +49,10 @@ app:
     main-repo-path: ${GIT_MAIN_REPO_PATH:/tmp/app/flows-repo/main}
     workspaces-path: ${GIT_WORKSPACES_PATH:/tmp/app/flows-repo/workspaces}
     default-branch: ${GIT_DEFAULT_BRANCH:main}
+    # Push and pull as the signed-in user instead of the service account below.
+    # Needs an OAuth2 scope that grants repository write access — on GitLab add
+    # write_repository to the scope list above; the default read_user cannot push.
+    use-user-credentials: ${GIT_USE_USER_CREDENTIALS:false}
     credentials:
       username: ${GIT_USERNAME:}
       password: ${GIT_TOKEN:}

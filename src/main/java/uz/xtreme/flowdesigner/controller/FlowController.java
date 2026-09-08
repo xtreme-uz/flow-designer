@@ -5,6 +5,7 @@ import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.FlowService;
+import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubDeploymentData;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowStatus;
@@ -84,6 +85,12 @@ public class FlowController {
         log.debug("Getting flow '{}' from main branch", name);
         return flowService.getFlowFromMain(name)
                 .orElseThrow(() -> new FlowNotFoundException(name, "main"));
+    }
+
+    @GetMapping("/flows/{name}/layout")
+    public FlowLayout getFlowLayout(@PathVariable String name) {
+        log.debug("Getting layout for flow '{}' from main branch", name);
+        return flowService.getLayoutFromMain(name);
     }
 
     // ==================== Workspace Management ====================
@@ -169,6 +176,29 @@ public class FlowController {
                 .orElseThrow(() -> new FlowNotFoundException(name, workspace.id()));
     }
 
+    @GetMapping("/workspaces/flows/{name}/layout")
+    public FlowLayout getWorkspaceFlowLayout(
+            @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
+            @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName,
+            @PathVariable String name) {
+
+        log.debug("Getting layout for flow '{}' in workspace for user '{}'", name, userId);
+        return flowService.getLayout(getWorkspaceOrThrow(userId, branchName), name);
+    }
+
+    @PutMapping("/workspaces/flows/{name}/layout")
+    public FlowLayout saveWorkspaceFlowLayout(
+            @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
+            @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName,
+            @PathVariable String name,
+            @RequestBody FlowLayout layout) {
+
+        log.debug("Saving layout for flow '{}' in workspace for user '{}'", name, userId);
+        WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
+        flowService.saveLayout(workspace, name, layout);
+        return layout;
+    }
+
     @PostMapping("/workspaces/flows")
     public ResponseEntity<FlowSummary> createFlow(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
@@ -180,14 +210,12 @@ public class FlowController {
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
 
-        if (flowService.flowExists(workspace, flowTypeId)) {
-            throw new FlowValidationException("Flow with name '" + flowTypeId + "' already exists");
-        }
-
-        // Audit fields are the server's to set — never trust what the client sent
+        // Audit fields are the server's to set — never trust what the client sent.
+        // createFlow checks for an existing flow under the same lock as the write,
+        // so two concurrent creates cannot both find the name free.
         ThubDeploymentData requestData = request.deploymentData();
         ThubDeploymentData deploymentData = withCreationAudit(requestData, userId, flowTypeId);
-        flowService.saveFlow(workspace, flowTypeId, deploymentData);
+        flowService.createFlow(workspace, flowTypeId, deploymentData);
 
         FlowSummary summary = FlowSummary.from(deploymentData.flowType());
         return ResponseEntity.status(HttpStatus.CREATED).body(summary);
@@ -293,7 +321,7 @@ public class FlowController {
         // Stage and commit as one unit so a concurrent save cannot slip into the
         // staged tree between the two steps
         String commitHash = gitService.withWorkspaceLock(workspace, () -> {
-            gitService.add(workspace, "THUB/");
+            gitService.addManagedFiles(workspace);
             return gitService.commit(workspace, request.message(), auditInfo, request.expectedVersion());
         });
         return new CommitResponse(commitHash, request.message());

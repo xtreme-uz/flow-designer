@@ -2,12 +2,14 @@ import { applyDagreLayout } from './layoutUtils';
 
 /**
  * Convert THUB deployment data to React Flow nodes and edges.
- * Positions are computed via dagre auto-layout.
  *
  * @param {Object} deploymentData - ThubDeploymentData from backend
+ * @param {Object|null} layout - saved canvas layout ({ nodes: [{ statusId, x, y }] }).
+ *   Nodes it covers keep the position the user left them at; the rest fall back
+ *   to dagre, so a flow saved before layouts existed still opens sensibly.
  * @returns {{ nodes: Array, edges: Array }}
  */
-export function thubToReactFlow(deploymentData) {
+export function thubToReactFlow(deploymentData, layout = null) {
   const { flowType, flowStatuses, flowStatusActions, flowStatusTransitions } = deploymentData;
 
   const initialStatusId = flowType?.initialflowstatusid ?? flowType?.initialFlowStatusId;
@@ -70,8 +72,18 @@ export function thubToReactFlow(deploymentData) {
     };
   });
 
-  // Apply dagre layout
-  const positionedNodes = applyDagreLayout(nodes, edges);
+  const savedPositions = new Map(
+    (layout?.nodes ?? [])
+      .filter((n) => n.statusId && Number.isFinite(n.x) && Number.isFinite(n.y))
+      .map((n) => [n.statusId, { x: n.x, y: n.y }])
+  );
+
+  // Dagre still runs: it positions anything the layout does not cover
+  const positionedNodes = applyDagreLayout(nodes, edges).map((node) =>
+    savedPositions.has(node.id)
+      ? { ...node, position: savedPositions.get(node.id) }
+      : node
+  );
 
   return { nodes: positionedNodes, edges };
 }
@@ -154,5 +166,26 @@ export function reactFlowToThub(nodes, edges, flowTypeId, existingFlowType = nul
     flowStatusActions,
     flowStatusTransitions,
     flowAssignments: existingAssignments ?? [],
+  };
+}
+
+/**
+ * Canvas layout for the current nodes: where each one sits, and which statuses
+ * the flow is made of. The backend needs the second part because THUB has no
+ * per-flow status list — without it a status with no action and no transition
+ * cannot be told apart from another flow's status when the flow is reopened.
+ *
+ * @param {Array} nodes - React Flow nodes
+ * @returns {{ nodes: Array<{ statusId: string, x: number, y: number }> }}
+ */
+export function reactFlowToLayout(nodes) {
+  return {
+    nodes: nodes
+      .filter((node) => node.data?.statusId)
+      .map((node) => ({
+        statusId: node.data.statusId,
+        x: Math.round(node.position?.x ?? 0),
+        y: Math.round(node.position?.y ?? 0),
+      })),
   };
 }

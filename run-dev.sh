@@ -7,6 +7,10 @@ export GIT_DEFAULT_BRANCH=develop
 export GIT_USERNAME=<your-git-username>
 export GIT_TOKEN=<your-git-personal-access-token>
 
+# Push as the signed-in user rather than the token above. Requires
+# write_repository in the OAuth2 scope (see application.yml).
+export GIT_USE_USER_CREDENTIALS=false
+
 # Uncomment for a self-hosted GitLab (defaults to https://gitlab.com)
 # export GITLAB_BASE_URL=https://gitlab.example.com
 export GITLAB_CLIENT_ID=<gitlab-application-client-id>

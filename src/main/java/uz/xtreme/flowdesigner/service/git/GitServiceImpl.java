@@ -35,6 +35,7 @@ import org.eclipse.jgit.util.FS;
 import org.eclipse.jgit.util.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -66,6 +67,13 @@ public class GitServiceImpl implements GitService {
     private static final String GIT_DIR = ".git";
     private static final String WORKSPACE_METADATA_FILE = "flowdesigner-workspace.properties";
     private static final String THUB_DIR = "THUB";
+    private static final String LAYOUT_DIR = ".flowdesigner";
+    /**
+     * The directories this application owns. Everything under them is staged on
+     * commit and counts towards the workspace being clean; anything else in the
+     * clone is someone else's file, reported separately rather than committed.
+     */
+    static final List<String> MANAGED_DIRS = List.of(THUB_DIR, LAYOUT_DIR);
     private static final int FETCH_TIMEOUT_SECONDS = 10;
     private static final Duration FETCH_INTERVAL = Duration.ofSeconds(30);
 
@@ -75,11 +83,33 @@ public class GitServiceImpl implements GitService {
     private final ConcurrentHashMap<String, Git> gitInstances = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Instant> lastFetchAt = new ConcurrentHashMap<>();
 
+    private final UserGitCredentials userGitCredentials;
+
     private Git mainRepo;
     private CredentialsProvider credentialsProvider;
 
-    public GitServiceImpl(GitProperties properties) {
+    @Autowired
+    public GitServiceImpl(GitProperties properties, UserGitCredentials userGitCredentials) {
         this.properties = properties;
+        this.userGitCredentials = userGitCredentials;
+    }
+
+    /**
+     * Uses the configured service credentials for everything — the shape the
+     * tests exercise, and the behaviour when no user token is available.
+     */
+    public GitServiceImpl(GitProperties properties) {
+        this(properties, UserGitCredentials.disabled());
+    }
+
+    /**
+     * Credentials for an operation made on behalf of a user: their own token when
+     * one is available, the service account otherwise. Repository-wide work
+     * (cloning and refreshing the main repo) always uses the service account —
+     * it runs on a schedule, with no user in context.
+     */
+    private CredentialsProvider userOrServiceCredentials() {
+        return userGitCredentials.forCurrentUser().orElse(credentialsProvider);
     }
 
     @PostConstruct
@@ -299,7 +329,8 @@ public class GitServiceImpl implements GitService {
      */
     private void excludeTempFilesFromGit(Path workspacePath) {
         Path excludeFile = workspacePath.resolve(GIT_DIR).resolve("info").resolve("exclude");
-        String rule = THUB_DIR + "/.*-data.json.tmp";
+        String rule = THUB_DIR + "/.*-data.json.tmp" + System.lineSeparator()
+                + LAYOUT_DIR + "/**/.*.json.tmp";
         try {
             Files.createDirectories(excludeFile.getParent());
             if (Files.exists(excludeFile) && Files.readString(excludeFile).contains(rule)) {
@@ -385,8 +416,9 @@ public class GitServiceImpl implements GitService {
                     .setDirectory(workspacePath.toFile())
                     .setBranch(properties.defaultBranch());
 
-            if (credentialsProvider != null) {
-                cloneCommand.setCredentialsProvider(credentialsProvider);
+            CredentialsProvider credentials = userOrServiceCredentials();
+            if (credentials != null) {
+                cloneCommand.setCredentialsProvider(credentials);
             }
 
             Git git = cloneCommand.call();
@@ -489,8 +521,9 @@ public class GitServiceImpl implements GitService {
                         // config: a conflicting rebase leaves a detached HEAD and a
                         // rebase in progress, which the merge recovery below cannot undo
                         .setRebase(false);
-                if (credentialsProvider != null) {
-                    pullCommand.setCredentialsProvider(credentialsProvider);
+                CredentialsProvider credentials = userOrServiceCredentials();
+                if (credentials != null) {
+                    pullCommand.setCredentialsProvider(credentials);
                 }
                 // JGit reports a failed merge in the result, it does not throw
                 PullResult result = pullCommand.call();
@@ -529,6 +562,11 @@ public class GitServiceImpl implements GitService {
     }
 
     @Override
+    public void addManagedFiles(WorkspaceInfo workspace) {
+        add(workspace, MANAGED_DIRS.stream().map(dir -> dir + "/").toArray(String[]::new));
+    }
+
+    @Override
     public void createAndPushBranch(WorkspaceInfo workspace, String branchName) {
         withLock(workspace, () -> {
             Git git = getGitInstance(workspace);
@@ -543,8 +581,9 @@ public class GitServiceImpl implements GitService {
                     var pushCommand = git.push()
                             .setRefSpecs(new RefSpec(Constants.R_HEADS + branchName
                                     + ":" + Constants.R_HEADS + branchName));
-                    if (credentialsProvider != null) {
-                        pushCommand.setCredentialsProvider(credentialsProvider);
+                    CredentialsProvider credentials = userOrServiceCredentials();
+                    if (credentials != null) {
+                        pushCommand.setCredentialsProvider(credentials);
                     }
                     verifyPushResults(pushCommand.call(), workspace);
                 } catch (RuntimeException | GitAPIException e) {
@@ -648,8 +687,9 @@ public class GitServiceImpl implements GitService {
             Git git = getGitInstance(workspace);
             try {
                 var pushCommand = git.push();
-                if (credentialsProvider != null) {
-                    pushCommand.setCredentialsProvider(credentialsProvider);
+                CredentialsProvider credentials = userOrServiceCredentials();
+                if (credentials != null) {
+                    pushCommand.setCredentialsProvider(credentials);
                 }
                 // A rejected push comes back as a status on the ref update, not as an exception
                 verifyPushResults(pushCommand.call(), workspace);
@@ -714,8 +754,8 @@ public class GitServiceImpl implements GitService {
 
         Set<String> changed = changedPaths(status);
 
-        List<String> flowChanges = changed.stream().filter(p -> p.startsWith(THUB_DIR + "/")).toList();
-        List<String> otherChanges = changed.stream().filter(p -> !p.startsWith(THUB_DIR + "/")).toList();
+        List<String> flowChanges = changed.stream().filter(GitServiceImpl::isManaged).toList();
+        List<String> otherChanges = changed.stream().filter(path -> !isManaged(path)).toList();
 
         StringBuilder detail = new StringBuilder();
         if (!flowChanges.isEmpty()) {
@@ -857,8 +897,9 @@ public class GitServiceImpl implements GitService {
                     // Status runs under the workspace lock, so an unresponsive
                     // remote must not be able to block saves indefinitely
                     .setTimeout(FETCH_TIMEOUT_SECONDS);
-            if (credentialsProvider != null) {
-                fetchCommand.setCredentialsProvider(credentialsProvider);
+            CredentialsProvider credentials = userOrServiceCredentials();
+            if (credentials != null) {
+                fetchCommand.setCredentialsProvider(credentials);
             }
             fetchCommand.call();
         } catch (GitAPIException | RuntimeException e) {
@@ -866,6 +907,11 @@ public class GitServiceImpl implements GitService {
             // an unreachable remote must leave the status readable, only staler
             log.debug("Could not refresh remote refs for workspace {}: {}", workspace.id(), e.getMessage());
         }
+    }
+
+    /** Whether a path belongs to a directory this application writes. */
+    static boolean isManaged(String path) {
+        return MANAGED_DIRS.stream().anyMatch(dir -> path.startsWith(dir + "/"));
     }
 
     /** Every path git would report as changed, in one sorted set. */
@@ -992,9 +1038,12 @@ public class GitServiceImpl implements GitService {
                 // panel dirty forever and invite a chain of empty commits. Those
                 // files still block a pull, so they are reported separately rather
                 // than left invisible.
-                Status status = git.status().addPath(THUB_DIR).call();
+                var statusCommand = git.status();
+                MANAGED_DIRS.forEach(statusCommand::addPath);
+                Status status = statusCommand.call();
+
                 Set<String> unmanaged = changedPaths(git.status().call()).stream()
-                        .filter(path -> !path.startsWith(THUB_DIR + "/"))
+                        .filter(path -> !isManaged(path))
                         .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
                 // Everything the user could still lose, in one sorted list
                 // changedPaths includes getConflicting(): without it a workspace

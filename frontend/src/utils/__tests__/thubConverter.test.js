@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reactFlowToThub, thubToReactFlow } from '../thubConverter';
+import { reactFlowToLayout, reactFlowToThub, thubToReactFlow } from '../thubConverter';
 
 /** Minimal THUB payload shaped like what the backend returns. */
 function deploymentData(overrides = {}) {
@@ -70,6 +70,25 @@ describe('thubToReactFlow', () => {
       maxTriesCount: 5,
     });
     expect(nodes.find((n) => n.id === 'FINISHED').data.action).toBeNull();
+  });
+
+  it('keeps the positions a saved layout provides', () => {
+    const layout = { nodes: [{ statusId: 'SRC_DEBITED', x: 400, y: 250 }] };
+
+    const { nodes } = thubToReactFlow(deploymentData(), layout);
+
+    expect(nodes.find((n) => n.id === 'SRC_DEBITED').position).toEqual({ x: 400, y: 250 });
+    // Everything the layout does not cover still comes from dagre
+    const accepted = nodes.find((n) => n.id === 'ACCEPTED');
+    expect(Number.isFinite(accepted.position.x)).toBe(true);
+  });
+
+  it('ignores layout entries with missing coordinates', () => {
+    const layout = { nodes: [{ statusId: 'SRC_DEBITED', x: null, y: 250 }] };
+
+    const { nodes } = thubToReactFlow(deploymentData(), layout);
+
+    expect(nodes.find((n) => n.id === 'SRC_DEBITED').position.x).not.toBeNull();
   });
 
   it('gives every node a position from the layout', () => {
@@ -154,5 +173,27 @@ describe('round trip', () => {
     expect(result.flowStatuses.map((s) => s.id).sort()).toEqual(['ACCEPTED', 'FINISHED', 'SRC_DEBITED']);
     expect(result.flowStatusTransitions).toHaveLength(1);
     expect(result.flowAssignments).toEqual(original.flowAssignments);
+  });
+});
+
+describe('reactFlowToLayout', () => {
+  it('records the status id and rounded position of every named node', () => {
+    const nodes = [
+      { id: 'n1', data: { statusId: 'ACCEPTED' }, position: { x: 10.4, y: 20.6 } },
+      { id: 'n2', data: { statusId: 'FINISHED' }, position: { x: 300, y: 0 } },
+    ];
+
+    expect(reactFlowToLayout(nodes)).toEqual({
+      nodes: [
+        { statusId: 'ACCEPTED', x: 10, y: 21 },
+        { statusId: 'FINISHED', x: 300, y: 0 },
+      ],
+    });
+  });
+
+  it('skips nodes that have no status id yet', () => {
+    const nodes = [{ id: 'node_0', data: { statusId: '' }, position: { x: 0, y: 0 } }];
+
+    expect(reactFlowToLayout(nodes).nodes).toEqual([]);
   });
 });
