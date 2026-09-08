@@ -254,10 +254,10 @@ PUT    /api/workspaces/flows/{name}/layout   # Save canvas layout
 
 ### Git Operations
 ```
-POST /api/workspaces/commit              # Commit changes (stages THUB/; body: { message, expectedVersion })
+POST /api/workspaces/commit              # Commit changes (stages THUB/ and .flowdesigner/; body: { message, expectedVersion })
 POST /api/workspaces/push                # Push to remote
 POST /api/workspaces/pull                # Pull from remote
-GET  /api/workspaces/status              # Git status: changedFiles, clean, aheadCount, behindCount, hasUpstream
+GET  /api/workspaces/status              # Git status: changedFiles, unmanagedFiles, clean, aheadCount, behindCount, hasUpstream
 POST /api/workspaces/branch              # Create new branch
 ```
 
@@ -384,4 +384,4 @@ POST /api/workspaces/branch              # Create new branch
 - Commit messages: descriptive, include flow name when relevant
 - Backend tests: JUnit 5 + Mockito, test files mirror source structure
 - No database - all persistence is Git-based
-- Git commit staging: `THUB/` directory (not `flows/`)
+- Git commit staging: the `THUB/` and `.flowdesigner/` directories (not `flows/`)
