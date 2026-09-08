@@ -45,6 +45,16 @@ export default function GitPanel({ hasUnsavedChanges }) {
     }
   };
 
+  // The operation already succeeded by the time the status is re-read; a failed
+  // refresh is worth reporting, but not as a failure of the operation itself
+  const refreshQuietly = async () => {
+    try {
+      await refreshStatus();
+    } catch {
+      toast.warning('Workspace status could not be refreshed — use ⟳ to retry.');
+    }
+  };
+
   const handleCommit = async (e) => {
     e.preventDefault();
     if (!commitMessage.trim()) {
@@ -57,13 +67,13 @@ export default function GitPanel({ hasUnsavedChanges }) {
       // Send the HEAD we last saw so the server refuses to commit over
       // someone else's work instead of silently stacking on top of it
       await api.commitChanges(commitMessage, branch, workspaceStatus?.currentVersion ?? null);
-      await refreshStatus();
       setCommitMessage('');
       toast.success('Changes committed successfully');
+      await refreshQuietly();
     } catch (err) {
       // A 409 means the workspace moved on: pull the current HEAD in, otherwise
       // every retry re-sends the same stale expectedVersion and fails again
-      await refreshStatus().catch(() => {});
+      await refreshQuietly();
       toast.error(`Commit failed: ${err.message}`);
     } finally {
       setIsCommitting(false);
@@ -74,9 +84,10 @@ export default function GitPanel({ hasUnsavedChanges }) {
     setIsPushing(true);
     try {
       await api.pushToRemote(branch);
-      await refreshStatus();
       toast.success('Changes pushed to remote');
+      await refreshQuietly();
     } catch (err) {
+      await refreshQuietly();
       toast.error(`Push failed: ${err.message}`);
     } finally {
       setIsPushing(false);
@@ -87,9 +98,10 @@ export default function GitPanel({ hasUnsavedChanges }) {
     setIsPulling(true);
     try {
       await api.pullFromRemote(branch);
-      await refreshStatus();
       toast.success('Changes pulled from remote');
+      await refreshQuietly();
     } catch (err) {
+      await refreshQuietly();
       toast.error(`Pull failed: ${err.message}`);
     } finally {
       setIsPulling(false);

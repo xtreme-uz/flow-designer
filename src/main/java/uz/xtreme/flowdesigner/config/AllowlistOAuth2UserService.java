@@ -22,7 +22,11 @@ import org.springframework.stereotype.Component;
 public class AllowlistOAuth2UserService implements OAuth2UserService<OAuth2UserRequest, OAuth2User> {
 
     private static final Logger log = LoggerFactory.getLogger(AllowlistOAuth2UserService.class);
-    private static final String ERROR_CODE = "access_denied";
+    /**
+     * Deliberately not "access_denied": providers use that for a user who
+     * cancelled consent, and the two need different messages.
+     */
+    public static final String ERROR_CODE = "flowdesigner_account_not_allowed";
 
     private final OAuth2UserService<OAuth2UserRequest, OAuth2User> delegate = new DefaultOAuth2UserService();
     private final OidcUserService oidcDelegate = new OidcUserService();

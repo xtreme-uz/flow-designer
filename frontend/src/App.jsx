@@ -291,7 +291,9 @@ export default function App() {
 
   // Flow management functions
   const loadFlow = async (flowName) => {
-    if (!confirmDiscardChanges('Open another flow')) return;
+    // Returns whether the flow was actually opened, so the caller's modal can
+    // stay put when the user backs out of the unsaved-changes prompt
+    if (!confirmDiscardChanges('Open another flow')) return false;
     setLoading(true);
     try {
       let deploymentData;
@@ -311,8 +313,10 @@ export default function App() {
       setCurrentFlowName(flowName);
       markAsSaved();
       fetchStatuses();
+      return true;
     } catch (err) {
       toast.error(`Failed to load flow: ${err.message}`);
+      return false;
     } finally {
       setLoading(false);
     }

@@ -87,12 +87,14 @@ public class SecurityConfig {
         public void onAuthenticationFailure(HttpServletRequest request, HttpServletResponse response,
                                             AuthenticationException exception) throws IOException, ServletException {
             boolean denied = exception instanceof OAuth2AuthenticationException oauth2
-                    && "access_denied".equals(oauth2.getError().getErrorCode());
+                    && AllowlistOAuth2UserService.ERROR_CODE.equals(oauth2.getError().getErrorCode());
             if (!denied) {
                 log.warn("OAuth2 login failed: {}", exception.getMessage());
             }
-            setDefaultFailureUrl(denied ? "/?error=login_denied" : "/?error=login_failed");
-            super.onAuthenticationFailure(request, response, exception);
+            // Redirect directly: this handler is a singleton, so storing the URL
+            // on it would let concurrent logins swap each other's messages
+            getRedirectStrategy().sendRedirect(request, response,
+                    denied ? "/?error=login_denied" : "/?error=login_failed");
         }
     }
 

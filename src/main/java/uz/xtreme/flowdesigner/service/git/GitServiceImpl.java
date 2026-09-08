@@ -461,6 +461,14 @@ public class GitServiceImpl implements GitService {
         withLock(workspace, () -> {
             Git git = getGitInstance(workspace);
             try {
+                // Merging into a dirty tree is what makes a pull dangerous: git
+                // refuses it, and any recovery from a half-done merge risks the
+                // files the user just saved. Ask for a commit instead.
+                if (!git.status().call().isClean()) {
+                    throw new GitSyncConflictException("pull",
+                            "The workspace has uncommitted changes — commit them before pulling.");
+                }
+
                 ObjectId headBeforePull = git.getRepository().resolve(Constants.HEAD);
                 var pullCommand = git.pull();
                 if (credentialsProvider != null) {
@@ -470,8 +478,9 @@ public class GitServiceImpl implements GitService {
                 PullResult result = pullCommand.call();
                 if (!result.isSuccessful()) {
                     // Leave no half-merged tree behind: conflict markers and
-                    // MERGE_HEAD would be swept into the next commit and pushed
-                    abortMerge(git, headBeforePull, workspace);
+                    // MERGE_HEAD would be swept into the next commit and pushed.
+                    // Safe here because the tree was clean when the merge started.
+                    abortMergeIfStarted(git, headBeforePull, workspace);
                 }
                 verifyPullResult(result, workspace);
                 updateLastAccessed(workspace);
@@ -636,9 +645,23 @@ public class GitServiceImpl implements GitService {
      * Puts the working tree back where it was before a failed pull. Without this
      * the workspace keeps the conflicted files and MERGE_HEAD, and the user's next
      * commit records the conflict markers as a merge commit.
+     *
+     * <p>Only runs when a merge actually started. When the merge never began —
+     * JGit reports CHECKOUT_CONFLICT and leaves the tree untouched — a reset here
+     * would destroy the very work it is meant to protect.
      */
-    private void abortMerge(Git git, ObjectId headBeforePull, WorkspaceInfo workspace) {
+    private void abortMergeIfStarted(Git git, ObjectId headBeforePull, WorkspaceInfo workspace) {
         if (headBeforePull == null) {
+            return;
+        }
+        try {
+            if (git.getRepository().readMergeHeads() == null) {
+                log.info("Pull for workspace {} left the working tree untouched, nothing to revert",
+                        workspace.id());
+                return;
+            }
+        } catch (IOException e) {
+            log.warn("Cannot tell whether workspace {} is mid-merge, leaving it alone", workspace.id(), e);
             return;
         }
         try {
@@ -801,16 +824,20 @@ public class GitServiceImpl implements GitService {
 
     @Override
     public WorkspaceStatus getStatus(WorkspaceInfo workspace) {
+        // Without a fetch the remote-tracking refs never move, so the behind count
+        // would always read zero and a user would only learn of a teammate's push
+        // when their own push is rejected. Done outside the lock: a slow remote
+        // must not hold up saves on this workspace.
+        fetchQuietly(getGitInstance(workspace), workspace);
+
         return withLockReturn(workspace, () -> {
             Git git = getGitInstance(workspace);
             updateLastAccessed(workspace);
             try {
-                // Without a fetch the remote-tracking refs never move, so the
-                // behind count would always read zero and a user would only learn
-                // of a teammate's push when their own push is rejected
-                fetchQuietly(git, workspace);
-
-                Status status = git.status().call();
+                // Only THUB/ is ever staged, so only THUB/ decides whether the
+                // workspace is clean — otherwise an unrelated file would leave the
+                // panel dirty forever and invite a chain of empty commits
+                Status status = git.status().addPath(THUB_DIR).call();
                 // Everything the user could still lose, in one sorted list
                 Set<String> changed = new TreeSet<>();
                 changed.addAll(status.getAdded());

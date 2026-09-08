@@ -261,9 +261,10 @@ export default function Header({
       {showFlowListModal && (
         <FlowListModal
           onClose={() => setShowFlowListModal(false)}
-          onLoadFlow={(flowName) => {
-            onLoadFlow(flowName);
-            setShowFlowListModal(false);
+          onLoadFlow={async (flowName) => {
+            if (await onLoadFlow(flowName)) {
+              setShowFlowListModal(false);
+            }
           }}
         />
       )}

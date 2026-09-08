@@ -230,6 +230,25 @@ class GitServiceImplTest {
     }
 
     @Nested
+    @DisplayName("Pull Safety Tests")
+    class PullSafetyTests {
+
+        @Test
+        @DisplayName("Refuses to pull over uncommitted work instead of risking it")
+        void refusesPullWithUncommittedChanges() throws IOException {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("dirty-puller", "master");
+            Files.createDirectories(workspace.path().resolve("THUB"));
+            Files.writeString(workspace.path().resolve("THUB/FlowType-data.json"), "{\"unsaved\": true}");
+
+            assertThrows(GitSyncConflictException.class, () -> gitService.pull(workspace));
+
+            assertEquals("{\"unsaved\": true}",
+                    Files.readString(workspace.path().resolve("THUB/FlowType-data.json")),
+                    "the unsaved file is still there");
+        }
+    }
+
+    @Nested
     @DisplayName("Workspace Restore Tests")
     class WorkspaceRestoreTests {
 
