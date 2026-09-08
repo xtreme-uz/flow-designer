@@ -47,10 +47,15 @@ export default function Header({
   // the click that opens it, so nothing sets state synchronously inside an effect
   useEffect(() => {
     if (!showWorkspaceModal) return;
+    let active = true;
+
     api.listBranches()
-      .then(list => setBranches(list))
-      .catch(() => setBranches([]))
-      .finally(() => setLoadingBranches(false));
+      .then(list => { if (active) setBranches(list); })
+      .catch(() => { if (active) setBranches([]); })
+      .finally(() => { if (active) setLoadingBranches(false); });
+
+    // The modal can be closed and reopened while a request is in flight
+    return () => { active = false; };
   }, [showWorkspaceModal]);
 
   const openWorkspaceModal = () => {
@@ -318,6 +323,8 @@ function FlowListModal({ onClose, onLoadFlow }) {
     // turned on would never be turned off again
     if (source === viewSource) return;
     setLoading(true);
+    // Otherwise the previous source's error sits above the new source's spinner
+    setError(null);
     setViewSource(source);
   };
 
