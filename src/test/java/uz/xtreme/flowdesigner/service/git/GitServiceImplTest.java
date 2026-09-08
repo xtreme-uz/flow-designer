@@ -1,6 +1,7 @@
 package uz.xtreme.flowdesigner.service.git;
 
 import uz.xtreme.flowdesigner.config.GitProperties;
+import uz.xtreme.flowdesigner.exception.GitSyncConflictException;
 import uz.xtreme.flowdesigner.exception.GitVersionConflictException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import org.eclipse.jgit.api.Git;
@@ -17,6 +18,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -90,6 +92,160 @@ class GitServiceImplTest {
     void tearDown() {
         if (gitService != null) {
             gitService.destroy();
+        }
+    }
+
+    @Nested
+    @DisplayName("Workspace Status Tests")
+    class WorkspaceStatusTests {
+
+        private WorkspaceInfo workspace;
+
+        @BeforeEach
+        void createWorkspace() {
+            workspace = gitService.getOrCreateWorkspace("statususer", "master");
+        }
+
+        @Test
+        @DisplayName("Reports a freshly cloned workspace as clean and in sync")
+        void cleanWorkspace() {
+            WorkspaceStatus status = gitService.getStatus(workspace);
+
+            assertTrue(status.clean());
+            assertTrue(status.changedFiles().isEmpty());
+            assertEquals(0, status.aheadCount());
+            assertEquals("master", status.branchName());
+        }
+
+        @Test
+        @DisplayName("Lists files the user saved but has not committed")
+        void reportsUncommittedFiles() throws IOException {
+            Files.createDirectories(workspace.path().resolve("THUB"));
+            Files.writeString(workspace.path().resolve("THUB/FlowType-data.json"), "{}");
+
+            WorkspaceStatus status = gitService.getStatus(workspace);
+
+            assertFalse(status.clean());
+            assertTrue(status.changedFiles().contains("THUB/FlowType-data.json"));
+        }
+
+        @Test
+        @DisplayName("Counts commits that have not been pushed")
+        void reportsUnpushedCommits() throws IOException {
+            Files.writeString(workspace.path().resolve("unpushed.json"), "{}");
+            gitService.add(workspace, ".");
+            gitService.commit(workspace, "Local only",
+                    AuditInfo.of("statususer", "Status User", "status@example.com"), null);
+
+            WorkspaceStatus status = gitService.getStatus(workspace);
+
+            assertTrue(status.clean());
+            assertEquals(1, status.aheadCount());
+            assertTrue(status.hasUpstream());
+        }
+    }
+
+    @Nested
+    @DisplayName("Push Rejection Tests")
+    class PushRejectionTests {
+
+        @Test
+        @DisplayName("Rejected push raises a conflict instead of reporting success")
+        void rejectedPushRaisesConflict() throws IOException {
+            // Two workspaces on the same branch: the second one's push cannot
+            // fast-forward once the first has pushed
+            WorkspaceInfo first = gitService.getOrCreateWorkspace("pusher-one", "master");
+            WorkspaceInfo second = gitService.getOrCreateWorkspace("pusher-two", "master");
+
+            Files.writeString(first.path().resolve("first.json"), "{}");
+            gitService.add(first, ".");
+            gitService.commit(first, "First", AuditInfo.of("one", "One", "one@example.com"), null);
+            gitService.push(first);
+
+            Files.writeString(second.path().resolve("second.json"), "{}");
+            gitService.add(second, ".");
+            gitService.commit(second, "Second", AuditInfo.of("two", "Two", "two@example.com"), null);
+
+            GitSyncConflictException ex = assertThrows(GitSyncConflictException.class,
+                    () -> gitService.push(second));
+            assertEquals("push", ex.getOperation());
+        }
+    }
+
+    @Nested
+    @DisplayName("Workspace Restore Tests")
+    class WorkspaceRestoreTests {
+
+        @Test
+        @DisplayName("Restores a workspace whose branch name contains dashes")
+        void restoresBranchWithDashes() {
+            String branch = "feature/TASK-123-cleanup";
+            WorkspaceInfo created = gitService.getOrCreateWorkspace("alisher-k", branch);
+            gitService.destroy();
+
+            // A new instance over the same directory stands in for a restart
+            GitServiceImpl restarted = new GitServiceImpl(new GitProperties(
+                    remoteRepoPath.toUri().toString(),
+                    mainRepoPath.toString(),
+                    workspacesPath.toString(),
+                    "master",
+                    new GitProperties.Credentials(null, null, null),
+                    new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
+            ));
+            restarted.init();
+            try {
+                Optional<WorkspaceInfo> restored = restarted.getWorkspace("alisher-k", branch);
+
+                assertTrue(restored.isPresent(), "workspace should be found under its original user and branch");
+                assertEquals(created.id(), restored.get().id());
+                assertEquals(branch, restored.get().branchName());
+                assertEquals("alisher-k", restored.get().userId());
+            } finally {
+                restarted.destroy();
+                gitService = null;
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Idle Cleanup Tests")
+    class IdleCleanupTests {
+
+        @Test
+        @DisplayName("Keeps an idle workspace that holds uncommitted work")
+        void keepsWorkspaceWithUncommittedWork() throws IOException {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("idleuser", "master");
+            Files.writeString(workspace.path().resolve("unsaved.json"), "{}");
+
+            gitService.cleanupIdleWorkspacesOlderThan(Instant.now().plusSeconds(60));
+
+            assertTrue(gitService.getWorkspace("idleuser", "master").isPresent());
+            assertTrue(Files.exists(workspace.path()));
+        }
+
+        @Test
+        @DisplayName("Keeps an idle workspace that holds unpushed commits")
+        void keepsWorkspaceWithUnpushedCommits() throws IOException {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("idleuser2", "master");
+            Files.writeString(workspace.path().resolve("committed.json"), "{}");
+            gitService.add(workspace, ".");
+            gitService.commit(workspace, "Not pushed",
+                    AuditInfo.of("idleuser2", "Idle", "idle@example.com"), null);
+
+            gitService.cleanupIdleWorkspacesOlderThan(Instant.now().plusSeconds(60));
+
+            assertTrue(gitService.getWorkspace("idleuser2", "master").isPresent());
+        }
+
+        @Test
+        @DisplayName("Removes an idle workspace with nothing left to lose")
+        void removesCleanWorkspace() {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("idleuser3", "master");
+
+            gitService.cleanupIdleWorkspacesOlderThan(Instant.now().plusSeconds(60));
+
+            assertTrue(gitService.getWorkspace("idleuser3", "master").isEmpty());
+            assertFalse(Files.exists(workspace.path()));
         }
     }
 

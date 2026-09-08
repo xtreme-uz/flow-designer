@@ -98,6 +98,14 @@ public interface GitService {
     String getHeadCommit(WorkspaceInfo workspace);
 
     /**
+     * Reports what is uncommitted and unpushed in the workspace.
+     *
+     * @param workspace the workspace
+     * @return the workspace status
+     */
+    WorkspaceStatus getStatus(WorkspaceInfo workspace);
+
+    /**
      * Removes a specific workspace.
      *
      * @param userId     the user identifier

@@ -9,6 +9,7 @@ import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.TransportException;
 import org.eclipse.jgit.api.MergeResult;
@@ -42,6 +43,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
@@ -635,6 +638,40 @@ public class GitServiceImpl implements GitService {
     }
 
     @Override
+    public WorkspaceStatus getStatus(WorkspaceInfo workspace) {
+        return withLockReturn(workspace, () -> {
+            Git git = getGitInstance(workspace);
+            updateLastAccessed(workspace);
+            try {
+                Status status = git.status().call();
+                // Everything the user could still lose, in one sorted list
+                Set<String> changed = new TreeSet<>();
+                changed.addAll(status.getAdded());
+                changed.addAll(status.getChanged());
+                changed.addAll(status.getRemoved());
+                changed.addAll(status.getModified());
+                changed.addAll(status.getMissing());
+                changed.addAll(status.getUntracked());
+
+                Repository repo = git.getRepository();
+                String branch = repo.getBranch();
+                BranchTrackingStatus tracking = BranchTrackingStatus.of(repo, branch);
+
+                return new WorkspaceStatus(
+                        getHeadCommitInternal(git),
+                        branch,
+                        List.copyOf(changed),
+                        tracking != null ? tracking.getAheadCount() : 0,
+                        tracking != null ? tracking.getBehindCount() : 0,
+                        tracking != null
+                );
+            } catch (GitAPIException | IOException e) {
+                throw new GitOperationException("Failed to read workspace status", e);
+            }
+        });
+    }
+
+    @Override
     public void cleanupWorkspace(String userId, String branchName) {
         String workspaceId = WorkspaceInfo.createId(userId, branchName);
         ReentrantLock lock = workspaceLocks.get(workspaceId);
@@ -681,10 +718,18 @@ public class GitServiceImpl implements GitService {
             return;
         }
 
-        Instant cutoff = Instant.now().minus(properties.cleanup().maxIdleTime());
+        cleanupIdleWorkspacesOlderThan(Instant.now().minus(properties.cleanup().maxIdleTime()));
+    }
+
+    /**
+     * Removes workspaces untouched since the cutoff, keeping any that still hold
+     * work only the server has. Package-visible so the idle behaviour can be
+     * tested without waiting out the configured idle time.
+     */
+    void cleanupIdleWorkspacesOlderThan(Instant cutoff) {
         log.debug("Checking for idle workspaces (cutoff: {})", cutoff);
 
-        workspaces.values().stream()
+        List.copyOf(workspaces.values()).stream()
                 .filter(w -> w.lastAccessedAt().isBefore(cutoff))
                 .forEach(workspace -> {
                     try {

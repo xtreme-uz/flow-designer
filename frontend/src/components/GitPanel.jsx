@@ -7,7 +7,7 @@ import './GitPanel.css';
 /**
  * Git operations panel for commit/push workflow
  */
-export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
+export default function GitPanel({ hasUnsavedChanges }) {
   const { branch, workspaceStatus, isMainBranch, refreshStatus } = useWorkspace();
   const toast = useToast();
   const [commitMessage, setCommitMessage] = useState('');
@@ -40,11 +40,12 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
 
     setIsCommitting(true);
     try {
-      await api.commitChanges(commitMessage, branch);
+      // Send the HEAD we last saw so the server refuses to commit over
+      // someone else's work instead of silently stacking on top of it
+      await api.commitChanges(commitMessage, branch, workspaceStatus?.currentVersion ?? null);
       await refreshStatus();
       setCommitMessage('');
       toast.success('Changes committed successfully');
-      if (onRefresh) onRefresh();
     } catch (err) {
       toast.error(`Commit failed: ${err.message}`);
     } finally {
@@ -58,7 +59,6 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
       await api.pushToRemote(branch);
       await refreshStatus();
       toast.success('Changes pushed to remote');
-      if (onRefresh) onRefresh();
     } catch (err) {
       toast.error(`Push failed: ${err.message}`);
     } finally {
@@ -72,7 +72,6 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
       await api.pullFromRemote(branch);
       await refreshStatus();
       toast.success('Changes pulled from remote');
-      if (onRefresh) onRefresh();
     } catch (err) {
       toast.error(`Pull failed: ${err.message}`);
     } finally {
@@ -102,11 +101,39 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
                 </span>
               </div>
               <div className="status-item">
-                <span className="status-label">Status:</span>
-                <span className={`status-value status-badge ${hasUnsavedChanges ? 'modified' : 'clean'}`}>
-                  {hasUnsavedChanges ? '● Modified' : '✓ Clean'}
+                <span className="status-label">Workspace:</span>
+                <span className={`status-value status-badge ${workspaceStatus.clean ? 'clean' : 'modified'}`}>
+                  {workspaceStatus.clean
+                    ? '✓ Committed'
+                    : `● ${workspaceStatus.changedFiles.length} uncommitted file${workspaceStatus.changedFiles.length === 1 ? '' : 's'}`}
                 </span>
               </div>
+              {workspaceStatus.changedFiles.length > 0 && (
+                <ul className="changed-files">
+                  {workspaceStatus.changedFiles.map((file) => (
+                    <li key={file}>{file}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="status-item">
+                <span className="status-label">Remote:</span>
+                <span className="status-value">
+                  {!workspaceStatus.hasUpstream
+                    ? 'branch not pushed yet'
+                    : workspaceStatus.aheadCount === 0 && workspaceStatus.behindCount === 0
+                      ? 'in sync'
+                      : [
+                          workspaceStatus.aheadCount > 0 ? `${workspaceStatus.aheadCount} to push` : null,
+                          workspaceStatus.behindCount > 0 ? `${workspaceStatus.behindCount} to pull` : null
+                        ].filter(Boolean).join(', ')}
+                </span>
+              </div>
+              {hasUnsavedChanges && (
+                <div className="status-item">
+                  <span className="status-label">Canvas:</span>
+                  <span className="status-value status-badge modified">● Unsaved edits</span>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -126,7 +153,8 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
             <button
               type="submit"
               className="btn btn-primary btn-full"
-              disabled={isCommitting || !commitMessage.trim()}
+              disabled={isCommitting || !commitMessage.trim() || workspaceStatus?.clean}
+              title={workspaceStatus?.clean ? 'Nothing to commit — save your flow first' : undefined}
             >
               {isCommitting ? '⏳ Committing...' : '📝 Commit'}
             </button>
@@ -147,7 +175,7 @@ export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
             <button
               className="btn btn-primary btn-full"
               onClick={handlePush}
-              disabled={isPushing}
+              disabled={isPushing || (workspaceStatus?.hasUpstream && workspaceStatus?.aheadCount === 0)}
             >
               {isPushing ? '⏳ Pushing...' : '⬆️ Push'}
             </button>

@@ -12,6 +12,7 @@ import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowType;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
 import uz.xtreme.flowdesigner.service.git.GitService;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
+import uz.xtreme.flowdesigner.service.git.WorkspaceStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -20,7 +21,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -89,7 +89,7 @@ public class FlowController {
     // ==================== Workspace Management ====================
 
     @PostMapping("/workspaces")
-    public ResponseEntity<WorkspaceInfo> getOrCreateWorkspace(
+    public ResponseEntity<WorkspaceResponse> getOrCreateWorkspace(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestBody CreateWorkspaceRequest request) {
 
@@ -102,28 +102,27 @@ public class FlowController {
         }
 
         WorkspaceInfo workspace = gitService.getOrCreateWorkspace(userId, branchName);
-        return ResponseEntity.status(HttpStatus.CREATED).body(workspace);
+        return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(workspace));
     }
 
     @GetMapping("/workspaces")
-    public List<WorkspaceInfo> listWorkspaces(
+    public List<WorkspaceResponse> listWorkspaces(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId) {
 
         log.debug("Listing workspaces for user '{}'", userId);
         return gitService.getAllWorkspaces().stream()
                 .filter(w -> w.userId().equals(userId))
+                .map(WorkspaceResponse::from)
                 .toList();
     }
 
     @GetMapping("/workspaces/current")
-    public WorkspaceInfo getCurrentWorkspace(
+    public WorkspaceResponse getCurrentWorkspace(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName) {
 
         log.debug("Getting workspace for user '{}', branch '{}'", userId, branchName);
-        return gitService.getWorkspace(userId, branchName)
-                .orElseThrow(() -> new WorkspaceNotFoundException(
-                        WorkspaceInfo.createId(userId, branchName)));
+        return WorkspaceResponse.from(getWorkspaceOrThrow(userId, branchName));
     }
 
     @DeleteMapping("/workspaces")
@@ -328,25 +327,30 @@ public class FlowController {
     }
 
     @GetMapping("/workspaces/status")
-    public Map<String, Object> getWorkspaceStatus(
+    public WorkspaceStatusResponse getWorkspaceStatus(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName) {
 
         log.debug("Getting status for workspace user '{}', branch '{}'", userId, branchName);
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
-        String currentVersion = gitService.getHeadCommit(workspace);
+        WorkspaceStatus status = gitService.getStatus(workspace);
 
-        return Map.of(
-                "workspaceId", workspace.id(),
-                "branch", workspace.branchName(),
-                "currentVersion", currentVersion,
-                "lastAccessed", workspace.lastAccessedAt()
+        return new WorkspaceStatusResponse(
+                workspace.id(),
+                workspace.branchName(),
+                status.headCommit(),
+                status.changedFiles(),
+                status.clean(),
+                status.aheadCount(),
+                status.behindCount(),
+                status.hasUpstream(),
+                workspace.lastAccessedAt()
         );
     }
 
     @PostMapping("/workspaces/branch")
-    public ResponseEntity<WorkspaceInfo> createBranch(
+    public ResponseEntity<WorkspaceResponse> createBranch(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String currentBranch,
             @RequestBody CreateBranchRequest request) {
@@ -363,7 +367,7 @@ public class FlowController {
         gitService.createBranch(currentWorkspace, request.newBranchName());
         WorkspaceInfo newWorkspace = gitService.getOrCreateWorkspace(userId, request.newBranchName());
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(newWorkspace);
+        return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(newWorkspace));
     }
 
     // ==================== Helper Methods ====================
@@ -446,4 +450,37 @@ public class FlowController {
     public record PullResponse(boolean success, String message) {}
 
     public record ConfigResponse(String defaultBranch) {}
+
+    /**
+     * Workspace as the client sees it. Deliberately without the on-disk path:
+     * the server's filesystem layout is nothing the browser needs.
+     */
+    public record WorkspaceResponse(
+            String id,
+            String userId,
+            String branchName,
+            Instant createdAt,
+            Instant lastAccessedAt
+    ) {
+        static WorkspaceResponse from(WorkspaceInfo workspace) {
+            return new WorkspaceResponse(
+                    workspace.id(),
+                    workspace.userId(),
+                    workspace.branchName(),
+                    workspace.createdAt(),
+                    workspace.lastAccessedAt());
+        }
+    }
+
+    public record WorkspaceStatusResponse(
+            String workspaceId,
+            String branch,
+            String currentVersion,
+            List<String> changedFiles,
+            boolean clean,
+            int aheadCount,
+            int behindCount,
+            boolean hasUpstream,
+            Instant lastAccessed
+    ) {}
 }

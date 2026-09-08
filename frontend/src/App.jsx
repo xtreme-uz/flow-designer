@@ -35,7 +35,7 @@ let nodeId = 0;
 const getId = () => `node_${nodeId++}`;
 
 export default function App() {
-  const { branch, isMainBranch } = useWorkspace();
+  const { branch, isMainBranch, refreshStatus } = useWorkspace();
   const toast = useToast();
 
   // Flow state
@@ -340,6 +340,7 @@ export default function App() {
       await api.updateFlow(currentFlowName, deploymentData, branch);
       setCurrentDeploymentData(deploymentData);
       markAsSaved();
+      refreshStatus().catch(() => {});
       toast.success('Flow saved successfully!');
     } catch (err) {
       if (err.errors && err.errors.length > 0) {
@@ -391,6 +392,7 @@ export default function App() {
       setEdges(flowEdges);
       markAsSaved();
       setShowNewFlowModal(false);
+      refreshStatus().catch(() => {});
       toast.success(`Flow '${flowName}' created successfully!`);
       fetchStatuses();
     } catch (err) {
@@ -413,6 +415,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.deleteFlow(currentFlowName, branch);
+      refreshStatus().catch(() => {});
       toast.success(`Flow '${currentFlowName}' deleted successfully`);
       setCurrentFlowName(null);
       setCurrentDeploymentData(null);
@@ -444,6 +447,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.renameFlow(currentFlowName, newName, branch);
+      refreshStatus().catch(() => {});
       toast.success(`Flow renamed to '${newName}'`);
       setCurrentFlowName(newName);
       setCurrentDeploymentData((prev) => {
@@ -568,7 +572,7 @@ export default function App() {
         )}
       </div>
 
-      <GitPanel hasUnsavedChanges={hasUnsavedChanges} onRefresh={() => {}} />
+      <GitPanel hasUnsavedChanges={hasUnsavedChanges} />
 
       {/* New Flow Modal */}
       {showNewFlowModal && (

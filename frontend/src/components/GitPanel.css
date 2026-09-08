@@ -253,3 +253,19 @@
 .info-box p:last-child {
   margin-bottom: 0;
 }
+
+.changed-files {
+  margin: 0.15rem 0 0.35rem;
+  padding-left: 1.1rem;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: #64748b;
+  max-height: 6.5rem;
+  overflow-y: auto;
+}
+
+.changed-files li {
+  overflow-wrap: anywhere;
+}

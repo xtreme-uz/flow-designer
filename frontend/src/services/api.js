@@ -125,7 +125,7 @@ export async function listFlowsFromMain() {
 }
 
 export async function getFlowFromMain(flowName) {
-  const response = await fetch(`${API_BASE}/flows/${flowName}`, { credentials: 'include' });
+  const response = await fetch(`${API_BASE}/flows/${encodeURIComponent(flowName)}`, { credentials: 'include' });
   return handleResponse(response);
 }
 
@@ -169,7 +169,7 @@ export async function listWorkspaceFlows(branch) {
 }
 
 export async function getWorkspaceFlow(flowName, branch) {
-  const response = await fetch(`${API_BASE}/workspaces/flows/${flowName}`, {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}`, {
     credentials: 'include',
     headers: getReadHeaders(branch)
   });
@@ -187,7 +187,7 @@ export async function createFlow(flowTypeId, deploymentData, branch) {
 }
 
 export async function updateFlow(flowName, deploymentData, branch) {
-  const response = await fetch(`${API_BASE}/workspaces/flows/${flowName}`, {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}`, {
     method: 'PUT',
     credentials: 'include',
     headers: getMutationHeaders(branch),
@@ -197,7 +197,7 @@ export async function updateFlow(flowName, deploymentData, branch) {
 }
 
 export async function deleteFlow(flowName, branch) {
-  const response = await fetch(`${API_BASE}/workspaces/flows/${flowName}`, {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}`, {
     method: 'DELETE',
     credentials: 'include',
     headers: getMutationHeaders(branch)
@@ -206,7 +206,7 @@ export async function deleteFlow(flowName, branch) {
 }
 
 export async function renameFlow(oldName, newName, branch) {
-  const response = await fetch(`${API_BASE}/workspaces/flows/${oldName}/rename`, {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(oldName)}/rename`, {
     method: 'POST',
     credentials: 'include',
     headers: getMutationHeaders(branch),
@@ -219,12 +219,16 @@ export async function renameFlow(oldName, newName, branch) {
 // GIT OPERATIONS
 // ============================================================================
 
-export async function commitChanges(message, branch) {
+/**
+ * @param expectedVersion HEAD the client last saw. The server rejects the commit
+ *   with 409 when the workspace moved on since, instead of committing over it.
+ */
+export async function commitChanges(message, branch, expectedVersion = null) {
   const response = await fetch(`${API_BASE}/workspaces/commit`, {
     method: 'POST',
     credentials: 'include',
     headers: getMutationHeaders(branch),
-    body: JSON.stringify({ message })
+    body: JSON.stringify({ message, expectedVersion })
   });
   return handleResponse(response);
 }
@@ -252,7 +256,7 @@ export async function createBranch(newBranch, currentBranch) {
     method: 'POST',
     credentials: 'include',
     headers: getMutationHeaders(currentBranch),
-    body: JSON.stringify({ branchName: newBranch })
+    body: JSON.stringify({ newBranchName: newBranch })
   });
   return handleResponse(response);
 }

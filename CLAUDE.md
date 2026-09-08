@@ -22,6 +22,7 @@ flow-designer/
 │       ├── index.css
 │       ├── services/api.js          # All REST API calls (ThubDeploymentData format)
 │       ├── utils/
+│       │   ├── __tests__/           # vitest specs (thubConverter round-trip)
 │       │   ├── thubConverter.js     # THUB ↔ React Flow conversion
 │       │   └── layoutUtils.js       # dagre auto-layout
 │       ├── contexts/
@@ -51,6 +52,8 @@ flow-designer/
     │   │   │   ├── GitProperties.java       # @ConfigurationProperties(prefix="app.git")
     │   │   │   ├── GitConfig.java           # Enables config + scheduling
     │   │   │   ├── SecurityConfig.java      # Spring Security + OAuth2 + CSRF config
+    │   │   │   ├── AuthProperties.java      # @ConfigurationProperties(prefix="app.auth") login allowlist
+    │   │   │   ├── AllowlistOAuth2UserService.java # Refuses logins outside the allowlist
     │   │   │   ├── UserIdHeaderFilter.java  # Injects X-User-Id from OAuth2 principal
     │   │   │   └── OAuth2UserAttributes.java # Provider-agnostic user attribute lookup
     │   │   ├── controller/
@@ -61,6 +64,7 @@ flow-designer/
     │   │   │   │   ├── GitService.java      # Interface
     │   │   │   │   ├── GitServiceImpl.java  # JGit operations + workspace mgmt
     │   │   │   │   ├── WorkspaceInfo.java   # Workspace metadata record
+    │   │   │   │   ├── WorkspaceStatus.java # Uncommitted files + ahead/behind counts
     │   │   │   │   └── AuditInfo.java       # Commit audit trail
     │   │   │   └── flow/
     │   │   │       ├── FlowService.java     # Interface
@@ -92,6 +96,7 @@ flow-designer/
     └── test/java/uz/xtreme/flowdesigner/
         ├── FlowDesignerApplicationTests.java
         ├── controller/FlowControllerTest.java
+        ├── config/AuthPropertiesTest.java
         └── service/
             ├── git/GitServiceImplTest.java
             └── flow/
@@ -131,7 +136,7 @@ java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
 ### Run Tests
 
 ```bash
-# All 103 tests
+# All tests — 127 backend (JUnit) + 8 frontend (vitest)
 cd flow-designer
 mvn test
 
@@ -140,6 +145,9 @@ mvn test -Dtest=FlowControllerTest
 mvn test -Dtest=FlowServiceImplTest
 mvn test -Dtest=ThubDataServiceImplTest
 mvn test -Dtest=GitServiceImplTest
+
+# Frontend only
+cd frontend && npm test
 ```
 
 ## Storage Architecture: THUB Configurator Pattern
@@ -184,7 +192,11 @@ Save: React Flow canvas → reactFlowToThub() → ThubDeploymentData → merge i
 
 ### Key Rules
 - **FlowStatus is SHARED** — multiple flows can use the same statuses; deleting a flow does NOT remove statuses
-- **Actions/Transitions are per-flow** — filtered by `flowtypeid` field, replaced on save
+- **Actions/Transitions/Assignments are per-flow** — matched by the record's `flowtypeid` field (never by R_ key
+  prefix: flow names may contain `_`, so `R_payment_` also matches the flow `payment_reversal`)
+- **One transition per (status, next status) pair** — the R_ key has no room for the result type, so multiple
+  result types belong on a single transition; a duplicate pair is rejected by validation
+- **Assignments are not editable on the canvas** — they are read with the flow and written back unchanged
 - **metadata.json + definition.json are NOT managed by Flow Designer** — they belong in the configurator-conf repository
 
 ## REST API
@@ -227,10 +239,10 @@ POST   /api/workspaces/flows/{name}/rename   # Rename flow
 
 ### Git Operations
 ```
-POST /api/workspaces/commit              # Commit changes (stages THUB/ directory)
+POST /api/workspaces/commit              # Commit changes (stages THUB/; body: { message, expectedVersion })
 POST /api/workspaces/push                # Push to remote
 POST /api/workspaces/pull                # Pull from remote
-GET  /api/workspaces/status              # Git status
+GET  /api/workspaces/status              # Git status: changedFiles, clean, aheadCount, behindCount, hasUpstream
 POST /api/workspaces/branch              # Create new branch
 ```
 
@@ -245,6 +257,8 @@ POST /api/workspaces/branch              # Create new branch
 | `GIT_USERNAME` | (empty) | Git HTTP auth username |
 | `GIT_TOKEN` | (empty) | Git HTTP auth token |
 | `GIT_SSH_KEY_PATH` | (empty) | Path to SSH key |
+| `AUTH_ALLOWED_USERNAMES` | (empty) | Comma-separated usernames allowed to sign in (empty = anyone the provider authenticates) |
+| `AUTH_ALLOWED_EMAIL_DOMAINS` | (empty) | Comma-separated email domains allowed to sign in |
 | `GITLAB_CLIENT_ID` | (empty) | GitLab OAuth2 application ID |
 | `GITLAB_CLIENT_SECRET` | (empty) | GitLab OAuth2 secret |
 | `GITLAB_BASE_URL` | `https://gitlab.com` | GitLab instance for OAuth2 login (self-hosted supported) |
@@ -278,12 +292,19 @@ POST /api/workspaces/branch              # Create new branch
 - Main branch: read-only, auto-pulled
 - Feature branches: per-user workspace isolation
 - Each workspace = separate local clone under `workspaces/{userId}/{branch}/`
-- Concurrency: per-workspace ReentrantLock
+- Concurrency: per-workspace ReentrantLock, also used by FlowService via `withWorkspaceLock()`
+- Workspace identity is stored in `.git/flowdesigner-workspace.properties` (never in the working tree); the branch
+  is read back from the repository, so directory names are never parsed
+- Push/pull check `RemoteRefUpdate` / `PullResult` and raise 409 on rejection or conflict
+- Commits set `setSign(false)` — the server user's global `commit.gpgsign` must not break every commit
+- Idle cleanup skips workspaces with uncommitted or unpushed work
 - Scheduled main repo refresh every 5 min
 - Post-push main repo refresh
 
 ### Auth
 - **GitLab OAuth2** via Spring Security (`GITLAB_BASE_URL`, defaults to `gitlab.com`)
+- **Login allowlist** (`app.auth.allowed-usernames` / `allowed-email-domains`) — `AllowlistOAuth2UserService`
+  refuses the login before a session exists. Both empty = anyone the provider authenticates (logged as a warning)
 - Session cookie (JSESSIONID) — no localStorage
 - `GET /api/me` → `{ username, name, avatarUrl, email }` from OAuth2 principal
 - `UserIdHeaderFilter` injects X-User-Id header from OAuth2 principal (FlowController unchanged)
@@ -296,9 +317,11 @@ POST /api/workspaces/branch              # Create new branch
 - **DTOs**: Java records with `@JsonProperty` for lowercase THUB column names
 - **ThubFlowType**: includes audit fields (createdBy, createdAt, lastModifiedBy, lastModifiedAt, version, component, categorization)
 - **ThubFlowStatusAction/Transition**: include `flowtypeid` for filtering in shared data files
-- **FlowServiceImpl.removeByFlowTypeId()**: removes map entries by `R_{flowTypeId}_` prefix
-- **FlowServiceImpl.saveFlow()**: merge-writes to all 5 data files (statuses additive, others replace by flowTypeId)
-- **ThubDataServiceImpl.writeDataFile()**: uses `TreeMap` for sorted JSON keys → minimal git diffs (unchanged records stay in place)
+- **FlowServiceImpl.removeByFlowTypeId()**: removes map entries whose `flowtypeid` field matches the flow
+- **FlowServiceImpl.saveFlow()**: merge-writes to all 5 data files (statuses additive, others replace by flowTypeId),
+  under `GitService.withWorkspaceLock()` so concurrent saves and commits cannot interleave
+- **ThubDataServiceImpl.writeDataFile()**: uses `TreeMap` for sorted JSON keys → minimal git diffs (unchanged records
+  stay in place); writes to a temp file and moves it into place so a failed write cannot truncate the data file
 - **Validation**: ThubDeploymentData validated (initial/final status exist, transitions reference valid statuses)
 - **maven-clean-plugin**: `mvn clean` also removes `frontend/dist/` and `src/main/resources/static/`
 
@@ -307,6 +330,9 @@ POST /api/workspaces/branch              # Create new branch
 - **currentMetadata**: derived from `currentDeploymentData.flowType` for Header/MetadataEditor
 - **editMetadata()**: merges partial flowType fields back into currentDeploymentData
 - **JSON property naming**: Backend uses `@JsonProperty("flowstatusid")`, frontend handles both camelCase and lowercase
+- **hasUnsavedChanges**: set by the actions that edit the flow (structural node/edge changes, editors, metadata),
+  never by an effect on `[nodes, edges]` — selection and drag events change nothing that is stored
+- **Branch switch clears the canvas**: a loaded flow belongs to the branch it came from
 
 ## Result Types (Edge Labels)
 | Type | Description |
@@ -325,6 +351,7 @@ POST /api/workspaces/branch              # Create new branch
 - [ ] THUB deployment API on the payment hub side
 - [ ] Flow Deployer service (configuration deployer integration)
 - [x] GitLab OAuth2 authentication
+- [x] Login allowlist (username / email domain)
 - [ ] Additional OAuth2 providers (GitHub, Bitbucket) — see `OAuth2UserAttributes`
 
 ## Conventions

@@ -10,6 +10,7 @@ import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
 import uz.xtreme.flowdesigner.service.git.GitService;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
+import uz.xtreme.flowdesigner.service.git.WorkspaceStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -148,7 +149,7 @@ class FlowControllerTest {
         void createWorkspace() {
             when(gitService.getOrCreateWorkspace(USER_ID, BRANCH)).thenReturn(workspace);
 
-            ResponseEntity<WorkspaceInfo> response = controller.getOrCreateWorkspace(
+            ResponseEntity<FlowController.WorkspaceResponse> response = controller.getOrCreateWorkspace(
                     USER_ID,
                     new FlowController.CreateWorkspaceRequest(BRANCH)
             );
@@ -176,7 +177,7 @@ class FlowControllerTest {
             );
             when(gitService.getAllWorkspaces()).thenReturn(List.of(workspace, other));
 
-            List<WorkspaceInfo> result = controller.listWorkspaces(USER_ID);
+            List<FlowController.WorkspaceResponse> result = controller.listWorkspaces(USER_ID);
 
             assertEquals(1, result.size());
             assertEquals(USER_ID, result.getFirst().userId());
@@ -187,10 +188,20 @@ class FlowControllerTest {
         void getCurrentWorkspace() {
             when(gitService.getWorkspace(USER_ID, BRANCH)).thenReturn(Optional.of(workspace));
 
-            WorkspaceInfo result = controller.getCurrentWorkspace(USER_ID, BRANCH);
+            FlowController.WorkspaceResponse result = controller.getCurrentWorkspace(USER_ID, BRANCH);
 
             assertNotNull(result);
             assertEquals(workspace.id(), result.id());
+        }
+
+        @Test
+        @DisplayName("GET /api/workspaces/current - does not expose the server path")
+        void workspaceResponseHidesServerPath() {
+            when(gitService.getWorkspace(USER_ID, BRANCH)).thenReturn(Optional.of(workspace));
+
+            FlowController.WorkspaceResponse result = controller.getCurrentWorkspace(USER_ID, BRANCH);
+
+            assertFalse(result.toString().contains("/tmp/workspaces"));
         }
 
         @Test
@@ -489,14 +500,30 @@ class FlowControllerTest {
         @Test
         @DisplayName("GET /api/workspaces/status - get workspace status")
         void getWorkspaceStatus() {
-            String headCommit = "abc123";
-            when(gitService.getHeadCommit(workspace)).thenReturn(headCommit);
+            when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
+                    "abc123", BRANCH, List.of("THUB/FlowType-data.json"), 2, 0, true));
 
-            Map<String, Object> result = controller.getWorkspaceStatus(USER_ID, BRANCH);
+            FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
 
-            assertEquals(workspace.id(), result.get("workspaceId"));
-            assertEquals(workspace.branchName(), result.get("branch"));
-            assertEquals(headCommit, result.get("currentVersion"));
+            assertEquals(workspace.id(), result.workspaceId());
+            assertEquals(workspace.branchName(), result.branch());
+            assertEquals("abc123", result.currentVersion());
+            assertEquals(List.of("THUB/FlowType-data.json"), result.changedFiles());
+            assertFalse(result.clean());
+            assertEquals(2, result.aheadCount());
+            assertTrue(result.hasUpstream());
+        }
+
+        @Test
+        @DisplayName("GET /api/workspaces/status - reports a clean workspace")
+        void getWorkspaceStatusClean() {
+            when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
+                    "abc123", BRANCH, List.of(), 0, 0, true));
+
+            FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
+
+            assertTrue(result.clean());
+            assertTrue(result.changedFiles().isEmpty());
         }
 
         @Test
@@ -511,7 +538,7 @@ class FlowControllerTest {
             );
             when(gitService.getOrCreateWorkspace(USER_ID, newBranch)).thenReturn(newWorkspace);
 
-            ResponseEntity<WorkspaceInfo> response = controller.createBranch(
+            ResponseEntity<FlowController.WorkspaceResponse> response = controller.createBranch(
                     USER_ID, BRANCH,
                     new FlowController.CreateBranchRequest(newBranch)
             );
