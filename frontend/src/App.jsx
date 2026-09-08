@@ -40,6 +40,9 @@ export default function App() {
 
   // Flow state
   const [currentFlowName, setCurrentFlowName] = useState(null);
+  // Opened from the main-branch listing while on a feature branch: saving then
+  // replaces this branch's own copy, which the user has to agree to
+  const [openedFromMain, setOpenedFromMain] = useState(false);
   const [currentDeploymentData, setCurrentDeploymentData] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
@@ -330,6 +333,7 @@ export default function App() {
       setNodes(flowNodes);
       setEdges(flowEdges);
       setCurrentFlowName(flowName);
+      setOpenedFromMain(source === 'main' && !isMainBranch);
       markAsSaved();
       fetchStatuses();
       return true;
@@ -363,6 +367,12 @@ export default function App() {
       return;
     }
 
+    if (openedFromMain && !window.confirm(
+      `This is the main-branch copy of "${currentFlowName}". Saving replaces this branch's version. Continue?`
+    )) {
+      return;
+    }
+
     setLoading(true);
     try {
       // Convert React Flow nodes/edges back to THUB deployment data
@@ -381,6 +391,7 @@ export default function App() {
         if (err.status !== 404) throw err;
         await api.createFlow(currentFlowName, deploymentData, branch);
       }
+      setOpenedFromMain(false);
       // Positions are the user's arrangement, not THUB data — stored separately.
       // The flow itself is already saved, so a failure here costs the layout only.
       try {
@@ -437,6 +448,7 @@ export default function App() {
       // Convert to React Flow for canvas display
       const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
       setCurrentFlowName(flowName);
+      setOpenedFromMain(false);
       setCurrentDeploymentData(deploymentData);
       setNodes(flowNodes);
       setEdges(flowEdges);

@@ -189,6 +189,24 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("A flow whose name predates Flow Designer still opens")
+        void legacyFlowNameStillOpens() {
+            // THUB ids are not policed; one with a dot could never have a layout file
+            Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(workspacePath);
+            flowTypes.put(ThubDataService.flowTypeKey("legacy.flow"), new ThubFlowType(
+                    "legacy.flow", "ACCEPTED", "FINISHED", "Legacy", "1.0", "THUB",
+                    null, null, null, null, null));
+            thubDataService.writeFlowTypes(workspacePath, flowTypes);
+            Map<String, ThubFlowStatus> statuses = thubDataService.readFlowStatuses(workspacePath);
+            statuses.put(ThubDataService.flowStatusKey("ACCEPTED"), new ThubFlowStatus("ACCEPTED", "Start"));
+            statuses.put(ThubDataService.flowStatusKey("FINISHED"), new ThubFlowStatus("FINISHED", "End"));
+            thubDataService.writeFlowStatuses(workspacePath, statuses);
+
+            assertTrue(flowService.getFlow(workspace, "legacy.flow").isPresent());
+            assertTrue(flowService.getLayout(workspace, "legacy.flow").isEmpty());
+        }
+
+        @Test
         @DisplayName("A flow without a layout reads back empty rather than failing")
         void missingLayoutIsEmpty() {
             saveTestFlow(workspacePath, "payment");

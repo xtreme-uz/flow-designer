@@ -35,6 +35,13 @@ public class FlowLayoutServiceImpl implements FlowLayoutService {
 
     @Override
     public FlowLayout read(Path basePath, String flowTypeId) {
+        // A name this service would never write cannot have a layout. Reading is
+        // on the path of every flow open, including flows THUB had before Flow
+        // Designer existed, so it answers "none" rather than refusing to serve them.
+        if (!isWritableName(flowTypeId)) {
+            return FlowLayout.empty();
+        }
+
         Path file = layoutFile(basePath, flowTypeId);
         if (!Files.exists(file)) {
             return FlowLayout.empty();
@@ -74,6 +81,9 @@ public class FlowLayoutServiceImpl implements FlowLayoutService {
 
     @Override
     public void delete(Path basePath, String flowTypeId) {
+        if (!isWritableName(flowTypeId)) {
+            return;
+        }
         try {
             Files.deleteIfExists(layoutFile(basePath, flowTypeId));
         } catch (IOException e) {
@@ -81,8 +91,12 @@ public class FlowLayoutServiceImpl implements FlowLayoutService {
         }
     }
 
+    private static boolean isWritableName(String flowTypeId) {
+        return flowTypeId != null && SAFE_FILE_NAME.matcher(flowTypeId).matches();
+    }
+
     private Path layoutFile(Path basePath, String flowTypeId) {
-        if (flowTypeId == null || !SAFE_FILE_NAME.matcher(flowTypeId).matches()) {
+        if (!isWritableName(flowTypeId)) {
             throw new FlowStorageException("Unsafe flow name for a layout file: " + flowTypeId, null);
         }
         return basePath.resolve(LAYOUT_DIR).resolve(FLOWS_DIR).resolve(flowTypeId + ".json");
