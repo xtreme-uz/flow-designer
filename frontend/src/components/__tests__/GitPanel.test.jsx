@@ -86,6 +86,18 @@ describe('GitPanel', () => {
     expect(toast.success).toHaveBeenCalled();
   });
 
+  it('refuses to commit when it does not know the workspace HEAD', async () => {
+    const user = userEvent.setup();
+    workspace.workspaceStatus = status({ currentVersion: null });
+    render(<GitPanel hasUnsavedChanges={false} />);
+
+    await user.type(screen.getByPlaceholderText(/commit message/i), 'Add debit step');
+    await user.click(screen.getByRole('button', { name: /commit/i }));
+
+    expect(api.commitChanges).not.toHaveBeenCalled();
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('refresh'));
+  });
+
   it('reports a failed commit without claiming success', async () => {
     const user = userEvent.setup();
     api.commitChanges.mockRejectedValue(new Error('Version conflict'));

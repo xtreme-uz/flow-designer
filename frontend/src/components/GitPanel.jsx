@@ -62,11 +62,18 @@ export default function GitPanel({ hasUnsavedChanges }) {
       return;
     }
 
+    // Committing without the HEAD we last saw tells the server to skip the
+    // version check — exactly when our view of the workspace is unknown
+    if (!workspaceStatus?.currentVersion) {
+      toast.warning('Workspace status is unknown — refresh with ⟳ before committing.');
+      return;
+    }
+
     setIsCommitting(true);
     try {
       // Send the HEAD we last saw so the server refuses to commit over
       // someone else's work instead of silently stacking on top of it
-      await api.commitChanges(commitMessage, branch, workspaceStatus?.currentVersion ?? null);
+      await api.commitChanges(commitMessage, branch, workspaceStatus.currentVersion);
       setCommitMessage('');
       toast.success('Changes committed successfully');
       await refreshQuietly();

@@ -302,6 +302,9 @@ public class GitServiceImpl implements GitService {
             gitInstances.put(workspaceId, git);
             workspaces.put(workspaceId, workspace);
             excludeTempFilesFromGit(workspacePath);
+            // Recovered through the directory-name fallback? Write the metadata so
+            // the next restart does not have to guess again
+            writeWorkspaceMetadata(workspacePath, userId, branchName);
             log.info("Restored workspace: {}", workspaceId);
         } catch (IOException e) {
             if (git != null) {
@@ -890,15 +893,18 @@ public class GitServiceImpl implements GitService {
         if (last != null && last.isAfter(Instant.now().minus(FETCH_INTERVAL))) {
             return;
         }
-        lastFetchAt.put(workspace.id(), Instant.now());
-        fetchQuietly(git, workspace);
+        // Stamped only on success: a failed fetch that consumed the window would
+        // leave the behind count reading "in sync" until it expired
+        if (fetchQuietly(git, workspace)) {
+            lastFetchAt.put(workspace.id(), Instant.now());
+        }
     }
 
     /**
      * Updates the remote-tracking refs, tolerating an unreachable remote: the
      * status is still useful offline, only the behind count goes stale.
      */
-    private void fetchQuietly(Git git, WorkspaceInfo workspace) {
+    private boolean fetchQuietly(Git git, WorkspaceInfo workspace) {
         try {
             var fetchCommand = git.fetch()
                     // Status runs under the workspace lock, so an unresponsive
@@ -909,10 +915,12 @@ public class GitServiceImpl implements GitService {
                 fetchCommand.setCredentialsProvider(credentials);
             }
             fetchCommand.call();
+            return true;
         } catch (GitAPIException | RuntimeException e) {
             // JGit wraps transport and IO failures in unchecked JGitInternalException;
             // an unreachable remote must leave the status readable, only staler
             log.debug("Could not refresh remote refs for workspace {}: {}", workspace.id(), e.getMessage());
+            return false;
         }
     }
 
@@ -1099,7 +1107,9 @@ public class GitServiceImpl implements GitService {
             deleteDirectory(workspace.path());
             // The lock stays in the map on purpose: removing it while holding it
             // lets a concurrent caller create a fresh lock and run alongside the
-            // deletion. One idle lock per user/branch is cheap.
+            // deletion — including a concurrent create, which would then clone
+            // twice into the same directory. The cost is one idle lock per
+            // user/branch pair seen since startup.
             log.info("Cleaned up workspace: {}", workspaceId);
         } finally {
             lock.unlock();

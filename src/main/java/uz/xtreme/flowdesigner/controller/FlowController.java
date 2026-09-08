@@ -90,6 +90,10 @@ public class FlowController {
     @GetMapping("/flows/{name}/layout")
     public FlowLayout getFlowLayout(@PathVariable String name) {
         log.debug("Getting layout for flow '{}' from main branch", name);
+        // An unknown flow answers the same way here as it does for the flow itself
+        if (flowService.getFlowFromMain(name).isEmpty()) {
+            throw new FlowNotFoundException(name, "main");
+        }
         return flowService.getLayoutFromMain(name);
     }
 
@@ -183,7 +187,11 @@ public class FlowController {
             @PathVariable String name) {
 
         log.debug("Getting layout for flow '{}' in workspace for user '{}'", name, userId);
-        return flowService.getLayout(getWorkspaceOrThrow(userId, branchName), name);
+        WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
+        if (!flowService.flowExists(workspace, name)) {
+            throw new FlowNotFoundException(name, workspace.id());
+        }
+        return flowService.getLayout(workspace, name);
     }
 
     @PutMapping("/workspaces/flows/{name}/layout")
