@@ -4,6 +4,7 @@ import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
+import uz.xtreme.flowdesigner.service.flow.dto.FlowLayout;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -45,6 +46,7 @@ class FlowServiceImplTest {
     private Path workspacePath;
     private GitProperties gitProperties;
     private ThubDataServiceImpl thubDataService;
+    private FlowLayoutServiceImpl flowLayoutService;
     private FlowServiceImpl flowService;
     private WorkspaceInfo workspace;
 
@@ -62,13 +64,15 @@ class FlowServiceImplTest {
                 mainRepoPath.toString(),
                 tempDir.resolve("workspaces").toString(),
                 "main",
+                false,
                 new GitProperties.Credentials(null, null, null),
                 new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
         );
 
         ObjectMapper objectMapper = new ObjectMapper();
         thubDataService = new ThubDataServiceImpl(objectMapper);
-        flowService = new FlowServiceImpl(gitProperties, gitService, thubDataService);
+        flowLayoutService = new FlowLayoutServiceImpl(objectMapper);
+        flowService = new FlowServiceImpl(gitProperties, gitService, thubDataService, flowLayoutService);
 
         workspace = new WorkspaceInfo(
                 "user1-feature_test",
@@ -142,6 +146,105 @@ class FlowServiceImplTest {
             transitions.put(ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()), t);
         }
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
+    }
+
+    // ==================== Layout Tests ====================
+
+    @Nested
+    @DisplayName("Layout Tests")
+    class LayoutTests {
+
+        @Test
+        @DisplayName("A status with no action and no transition survives a reload")
+        void unwiredStatusSurvivesReload() {
+            saveTestFlow(workspacePath, "payment");
+            // A node the user named but has not wired to anything yet
+            Map<String, ThubFlowStatus> statuses = thubDataService.readFlowStatuses(workspacePath);
+            statuses.put(ThubDataService.flowStatusKey("PARKED"), new ThubFlowStatus("PARKED", "Parked"));
+            thubDataService.writeFlowStatuses(workspacePath, statuses);
+
+            flowService.saveLayout(workspace, "payment", new FlowLayout(List.of(
+                    new FlowLayout.NodePosition("ACCEPTED", 0, 0),
+                    new FlowLayout.NodePosition("PARKED", 120, 240))));
+
+            Optional<ThubDeploymentData> reloaded = flowService.getFlow(workspace, "payment");
+
+            assertTrue(reloaded.isPresent());
+            assertTrue(reloaded.get().flowStatuses().stream().anyMatch(st -> "PARKED".equals(st.id())),
+                    "an unwired status is only known from the layout");
+        }
+
+        @Test
+        @DisplayName("Layouts are read back as they were written")
+        void layoutRoundTrip() {
+            saveTestFlow(workspacePath, "payment");
+            FlowLayout layout = new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80)));
+
+            flowService.saveLayout(workspace, "payment", layout);
+
+            FlowLayout stored = flowService.getLayout(workspace, "payment");
+            assertEquals(1, stored.nodes().size());
+            assertEquals("ACCEPTED", stored.nodes().get(0).statusId());
+            assertEquals(40, stored.nodes().get(0).x());
+        }
+
+        @Test
+        @DisplayName("A flow whose name predates Flow Designer still opens")
+        void legacyFlowNameStillOpens() {
+            // THUB ids are not policed; one with a dot could never have a layout file
+            Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(workspacePath);
+            flowTypes.put(ThubDataService.flowTypeKey("legacy.flow"), new ThubFlowType(
+                    "legacy.flow", "ACCEPTED", "FINISHED", "Legacy", "1.0", "THUB",
+                    null, null, null, null, null));
+            thubDataService.writeFlowTypes(workspacePath, flowTypes);
+            Map<String, ThubFlowStatus> statuses = thubDataService.readFlowStatuses(workspacePath);
+            statuses.put(ThubDataService.flowStatusKey("ACCEPTED"), new ThubFlowStatus("ACCEPTED", "Start"));
+            statuses.put(ThubDataService.flowStatusKey("FINISHED"), new ThubFlowStatus("FINISHED", "End"));
+            thubDataService.writeFlowStatuses(workspacePath, statuses);
+
+            assertTrue(flowService.getFlow(workspace, "legacy.flow").isPresent());
+            assertTrue(flowService.getLayout(workspace, "legacy.flow").isEmpty());
+        }
+
+        @Test
+        @DisplayName("A flow without a layout reads back empty rather than failing")
+        void missingLayoutIsEmpty() {
+            saveTestFlow(workspacePath, "payment");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Renaming a flow carries its layout to the new name")
+        void renameMovesLayout() {
+            saveTestFlow(workspacePath, "payment");
+            flowService.saveLayout(workspace, "payment",
+                    new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80))));
+
+            flowService.renameFlow(workspace, "payment", "payment-v2");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+            assertEquals(1, flowService.getLayout(workspace, "payment-v2").nodes().size());
+        }
+
+        @Test
+        @DisplayName("Deleting a flow removes its layout")
+        void deleteRemovesLayout() {
+            saveTestFlow(workspacePath, "payment");
+            flowService.saveLayout(workspace, "payment",
+                    new FlowLayout(List.of(new FlowLayout.NodePosition("ACCEPTED", 40, 80))));
+
+            flowService.deleteFlow(workspace, "payment");
+
+            assertTrue(flowService.getLayout(workspace, "payment").isEmpty());
+        }
+
+        @Test
+        @DisplayName("Refuses a layout for a flow that does not exist")
+        void layoutRequiresTheFlow() {
+            assertThrows(FlowNotFoundException.class, () ->
+                    flowService.saveLayout(workspace, "missing-flow", FlowLayout.empty()));
+        }
     }
 
     // ==================== Flow Isolation Tests ====================
@@ -416,6 +519,15 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("Should refuse to create a flow that already exists")
+        void createRejectsDuplicateName() {
+            flowService.createFlow(workspace, "payment", createValidDeploymentData("payment"));
+
+            assertThrows(FlowValidationException.class, () ->
+                    flowService.createFlow(workspace, "payment", createValidDeploymentData("payment")));
+        }
+
+        @Test
         @DisplayName("Should refuse to write into a workspace that no longer exists")
         void saveRefusesDeletedWorkspace() throws IOException {
             // Idle cleanup can remove the clone between the request and the lock
@@ -471,6 +583,75 @@ class FlowServiceImplTest {
             // Shared statuses file should have 3 unique statuses (not 6)
             Map<String, ThubFlowStatus> allStatuses = thubDataService.readFlowStatuses(workspacePath);
             assertEquals(3, allStatuses.size()); // ACCEPTED, SRC_DEBITED, FINISHED
+        }
+    }
+
+    // ==================== Update Flow Tests ====================
+
+    @Nested
+    @DisplayName("Update Flow Tests")
+    class UpdateFlowTests {
+
+        @Test
+        @DisplayName("Should keep the stored creation audit")
+        void updateKeepsCreationAudit() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData original = createValidDeploymentData("audited");
+            flowService.saveFlow(workspace, "audited", withAudit(original,
+                    "original-author", createdAt, "original-author", createdAt));
+
+            // What the canvas sends back: no audit fields at all
+            ThubFlowType updated = flowService.updateFlow(workspace, "audited",
+                    withAudit(original, null, null, null, null), "editor");
+
+            assertEquals("original-author", updated.createdBy());
+            assertEquals(createdAt, updated.createdAt());
+            assertEquals("editor", updated.lastModifiedBy());
+            assertNotNull(updated.lastModifiedAt());
+        }
+
+        @Test
+        @DisplayName("Should ignore a forged author in the request body")
+        void updateIgnoresForgedAuthor() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData original = createValidDeploymentData("audited");
+            flowService.saveFlow(workspace, "audited", withAudit(original,
+                    "original-author", createdAt, "original-author", createdAt));
+
+            Instant forgedAt = Instant.parse("1999-01-01T00:00:00Z");
+            ThubFlowType updated = flowService.updateFlow(workspace, "audited",
+                    withAudit(original, "someone-else", forgedAt, "someone-else", forgedAt),
+                    "editor");
+
+            assertEquals("original-author", updated.createdBy());
+            assertEquals(createdAt, updated.createdAt());
+            assertEquals("editor", updated.lastModifiedBy());
+
+            // …and the stored record carries the same audit, not the forged one
+            ThubFlowType stored = thubDataService.readFlowTypes(workspacePath)
+                    .get(ThubDataService.flowTypeKey("audited"));
+            assertEquals("original-author", stored.createdBy());
+            assertEquals(createdAt, stored.createdAt());
+        }
+
+        @Test
+        @DisplayName("Should throw when the flow does not exist")
+        void updateUnknownFlow() {
+            assertThrows(FlowNotFoundException.class, () ->
+                    flowService.updateFlow(workspace, "missing",
+                            createValidDeploymentData("missing"), "editor"));
+        }
+
+        private ThubDeploymentData withAudit(ThubDeploymentData data, String createdBy,
+                                             Instant createdAt, String modifiedBy, Instant modifiedAt) {
+            ThubFlowType type = data.flowType();
+            return new ThubDeploymentData(
+                    new ThubFlowType(
+                            type.id(), type.initialFlowStatusId(), type.finalFlowStatusId(),
+                            type.description(), type.version(), type.component(),
+                            createdBy, createdAt, modifiedBy, modifiedAt, type.categorization()),
+                    data.flowStatuses(), data.flowStatusActions(),
+                    data.flowStatusTransitions(), data.flowAssignments());
         }
     }
 

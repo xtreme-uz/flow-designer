@@ -132,10 +132,8 @@ public class ThubDataServiceImpl implements ThubDataService {
 
             // Write beside the target and move into place, so a failure mid-write
             // leaves the previous file intact instead of a truncated one. The temp
-            // name is fixed per table, and any file orphaned by a crash is swept
-            // here — left behind it would keep the workspace looking dirty forever
-            // and could be committed by "git add THUB/".
-            deleteStaleTempFiles(thubDir);
+            // name is fixed per table, so a file orphaned by a crash is replaced by
+            // the next write of that table — and a save writes every table.
             Path tempFile = thubDir.resolve(tempFileName(tableName));
             try {
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), wrapper);
@@ -154,28 +152,6 @@ public class ThubDataServiceImpl implements ThubDataService {
 
     private static String tempFileName(String tableName) {
         return "." + tableName + TEMP_SUFFIX;
-    }
-
-    /** Matches only the names this class writes, never a file the user put there. */
-    private static boolean isOwnTempFile(Path path) {
-        String name = path.getFileName().toString();
-        return name.startsWith(".") && name.endsWith(TEMP_SUFFIX);
-    }
-
-    /**
-     * Removes temp files left by an interrupted write. Safe to do unconditionally:
-     * writes to a workspace are serialized by the workspace lock, so no live write
-     * owns one of these when this runs.
-     */
-    private void deleteStaleTempFiles(Path thubDir) {
-        try (var entries = Files.list(thubDir)) {
-            for (Path entry : entries.filter(ThubDataServiceImpl::isOwnTempFile).toList()) {
-                Files.deleteIfExists(entry);
-                log.warn("Removed leftover THUB temp file: {}", entry.getFileName());
-            }
-        } catch (IOException e) {
-            log.warn("Failed to sweep THUB temp files in {}", thubDir, e);
-        }
     }
 
     /**

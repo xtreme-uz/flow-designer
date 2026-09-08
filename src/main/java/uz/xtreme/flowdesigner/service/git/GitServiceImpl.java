@@ -35,6 +35,7 @@ import org.eclipse.jgit.util.FS;
 import org.eclipse.jgit.util.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -66,20 +67,53 @@ public class GitServiceImpl implements GitService {
     private static final String GIT_DIR = ".git";
     private static final String WORKSPACE_METADATA_FILE = "flowdesigner-workspace.properties";
     private static final String THUB_DIR = "THUB";
+    private static final String LAYOUT_DIR = ".flowdesigner";
+    /**
+     * The directories this application owns. Everything under them is staged on
+     * commit and counts towards the workspace being clean; anything else in the
+     * clone is someone else's file, reported separately rather than committed.
+     */
+    static final List<String> MANAGED_DIRS = List.of(THUB_DIR, LAYOUT_DIR);
     private static final int FETCH_TIMEOUT_SECONDS = 10;
     private static final Duration FETCH_INTERVAL = Duration.ofSeconds(30);
+    private static final Duration MAIN_REPO_PULL_INTERVAL = Duration.ofSeconds(30);
 
     private final GitProperties properties;
     private final ConcurrentHashMap<String, ReentrantLock> workspaceLocks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WorkspaceInfo> workspaces = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Git> gitInstances = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Instant> lastFetchAt = new ConcurrentHashMap<>();
+    /** One clone, one index: two pulls at once collide on .git/index.lock. */
+    private final ReentrantLock mainRepoLock = new ReentrantLock();
+
+    private final UserGitCredentials userGitCredentials;
 
     private Git mainRepo;
     private CredentialsProvider credentialsProvider;
+    private volatile Instant lastMainRepoPull;
 
-    public GitServiceImpl(GitProperties properties) {
+    @Autowired
+    public GitServiceImpl(GitProperties properties, UserGitCredentials userGitCredentials) {
         this.properties = properties;
+        this.userGitCredentials = userGitCredentials;
+    }
+
+    /**
+     * Uses the configured service credentials for everything — the shape the
+     * tests exercise, and the behaviour when no user token is available.
+     */
+    public GitServiceImpl(GitProperties properties) {
+        this(properties, UserGitCredentials.disabled());
+    }
+
+    /**
+     * Credentials for an operation made on behalf of a user: their own token when
+     * one is available, the service account otherwise. Repository-wide work
+     * (cloning and refreshing the main repo) always uses the service account —
+     * it runs on a schedule, with no user in context.
+     */
+    private CredentialsProvider userOrServiceCredentials() {
+        return userGitCredentials.forCurrentUser().orElse(credentialsProvider);
     }
 
     @PostConstruct
@@ -168,12 +202,36 @@ public class GitServiceImpl implements GitService {
 
     @Override
     public void pullMainRepo() {
+        pullMainRepo(false);
+    }
+
+    @Override
+    public void pullMainRepo(boolean force) {
         if (mainRepo == null) {
             log.warn("Main repository not initialized, skipping pull");
             return;
         }
 
+        // Every read of the main branch asks for a pull — opening one flow asks
+        // several times over — so unforced pulls are throttled. Anything that has
+        // to see the latest state, such as the refresh after a push, forces one.
+        Instant last = lastMainRepoPull;
+        if (!force && last != null && last.isAfter(Instant.now().minus(MAIN_REPO_PULL_INTERVAL))) {
+            return;
+        }
+
+        // Requests pull the main repo before every read, and a scheduled refresh
+        // does the same; without this they can run at the same time
+        mainRepoLock.lock();
         try {
+            // Concurrent readers all pass the check above and queue here; without
+            // re-reading the stamp under the lock each of them still pulls
+            Instant lastUnderLock = lastMainRepoPull;
+            if (!force && lastUnderLock != null
+                    && lastUnderLock.isAfter(Instant.now().minus(MAIN_REPO_PULL_INTERVAL))) {
+                return;
+            }
+
             // Check if repo has any commits - skip pull for empty repos
             ObjectId head = mainRepo.getRepository().resolve("HEAD");
             if (head == null) {
@@ -188,6 +246,7 @@ public class GitServiceImpl implements GitService {
                 pullCommand.setCredentialsProvider(credentialsProvider);
             }
             PullResult result = pullCommand.call();
+            lastMainRepoPull = Instant.now();
             if (!result.isSuccessful()) {
                 // Nothing writes to the main repo, so this means it was tampered with locally
                 log.warn("Main repository pull did not complete cleanly: {}", result);
@@ -198,6 +257,8 @@ public class GitServiceImpl implements GitService {
             throw new GitAuthenticationException("Failed to pull main repository", e);
         } catch (GitAPIException | IOException e) {
             throw new GitOperationException("Failed to pull main repository", e);
+        } finally {
+            mainRepoLock.unlock();
         }
     }
 
@@ -265,6 +326,9 @@ public class GitServiceImpl implements GitService {
             gitInstances.put(workspaceId, git);
             workspaces.put(workspaceId, workspace);
             excludeTempFilesFromGit(workspacePath);
+            // Recovered through the directory-name fallback? Write the metadata so
+            // the next restart does not have to guess again
+            writeWorkspaceMetadata(workspacePath, userId, branchName);
             log.info("Restored workspace: {}", workspaceId);
         } catch (IOException e) {
             if (git != null) {
@@ -299,7 +363,8 @@ public class GitServiceImpl implements GitService {
      */
     private void excludeTempFilesFromGit(Path workspacePath) {
         Path excludeFile = workspacePath.resolve(GIT_DIR).resolve("info").resolve("exclude");
-        String rule = THUB_DIR + "/.*-data.json.tmp";
+        String rule = THUB_DIR + "/.*-data.json.tmp" + System.lineSeparator()
+                + LAYOUT_DIR + "/**/.*.json.tmp";
         try {
             Files.createDirectories(excludeFile.getParent());
             if (Files.exists(excludeFile) && Files.readString(excludeFile).contains(rule)) {
@@ -385,8 +450,9 @@ public class GitServiceImpl implements GitService {
                     .setDirectory(workspacePath.toFile())
                     .setBranch(properties.defaultBranch());
 
-            if (credentialsProvider != null) {
-                cloneCommand.setCredentialsProvider(credentialsProvider);
+            CredentialsProvider credentials = userOrServiceCredentials();
+            if (credentials != null) {
+                cloneCommand.setCredentialsProvider(credentials);
             }
 
             Git git = cloneCommand.call();
@@ -489,8 +555,9 @@ public class GitServiceImpl implements GitService {
                         // config: a conflicting rebase leaves a detached HEAD and a
                         // rebase in progress, which the merge recovery below cannot undo
                         .setRebase(false);
-                if (credentialsProvider != null) {
-                    pullCommand.setCredentialsProvider(credentialsProvider);
+                CredentialsProvider credentials = userOrServiceCredentials();
+                if (credentials != null) {
+                    pullCommand.setCredentialsProvider(credentials);
                 }
                 // JGit reports a failed merge in the result, it does not throw
                 PullResult result = pullCommand.call();
@@ -529,6 +596,11 @@ public class GitServiceImpl implements GitService {
     }
 
     @Override
+    public void addManagedFiles(WorkspaceInfo workspace) {
+        add(workspace, MANAGED_DIRS.stream().map(dir -> dir + "/").toArray(String[]::new));
+    }
+
+    @Override
     public void createAndPushBranch(WorkspaceInfo workspace, String branchName) {
         withLock(workspace, () -> {
             Git git = getGitInstance(workspace);
@@ -543,8 +615,9 @@ public class GitServiceImpl implements GitService {
                     var pushCommand = git.push()
                             .setRefSpecs(new RefSpec(Constants.R_HEADS + branchName
                                     + ":" + Constants.R_HEADS + branchName));
-                    if (credentialsProvider != null) {
-                        pushCommand.setCredentialsProvider(credentialsProvider);
+                    CredentialsProvider credentials = userOrServiceCredentials();
+                    if (credentials != null) {
+                        pushCommand.setCredentialsProvider(credentials);
                     }
                     verifyPushResults(pushCommand.call(), workspace);
                 } catch (RuntimeException | GitAPIException e) {
@@ -553,6 +626,9 @@ public class GitServiceImpl implements GitService {
                     deleteLocalBranch(git, branchName);
                     throw e;
                 }
+                // The branch lives on the remote now, and its own workspace clones
+                // it from there; keeping the ref here only breaks a later re-create
+                deleteLocalBranch(git, branchName);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to publish branch: " + branchName, e);
@@ -648,8 +724,9 @@ public class GitServiceImpl implements GitService {
             Git git = getGitInstance(workspace);
             try {
                 var pushCommand = git.push();
-                if (credentialsProvider != null) {
-                    pushCommand.setCredentialsProvider(credentialsProvider);
+                CredentialsProvider credentials = userOrServiceCredentials();
+                if (credentials != null) {
+                    pushCommand.setCredentialsProvider(credentials);
                 }
                 // A rejected push comes back as a status on the ref update, not as an exception
                 verifyPushResults(pushCommand.call(), workspace);
@@ -702,31 +779,46 @@ public class GitServiceImpl implements GitService {
     }
 
     /**
-     * Refuses a pull that could cost the user work. Names the files, and
-     * distinguishes the app's own data from anything else in the clone, because
-     * the two need different answers: commit the flows, remove the strays.
+     * Refuses a pull that could cost the user work.
+     *
+     * <p>Recovery from a failed merge is a repository-wide {@code reset --hard},
+     * which reverts tracked files and leaves untracked ones alone. So a pull is
+     * blocked by uncommitted changes to the flows, and by tracked changes
+     * anywhere else in the clone — but an untracked stray file, which the user
+     * has no way to remove through this application, is not in danger and does
+     * not stand in the way.
      */
     private void requireCleanTreeForPull(Git git) throws GitAPIException {
         Status status = git.status().call();
-        if (status.isClean()) {
+
+        Set<String> tracked = new TreeSet<>();
+        tracked.addAll(status.getConflicting());
+        tracked.addAll(status.getAdded());
+        tracked.addAll(status.getChanged());
+        tracked.addAll(status.getRemoved());
+        tracked.addAll(status.getModified());
+        tracked.addAll(status.getMissing());
+
+        List<String> flowChanges = new ArrayList<>(status.getUntracked().stream()
+                .filter(GitServiceImpl::isManaged).toList());
+        flowChanges.addAll(tracked.stream().filter(GitServiceImpl::isManaged).toList());
+        List<String> trackedElsewhere = tracked.stream().filter(path -> !isManaged(path)).toList();
+
+        if (flowChanges.isEmpty() && trackedElsewhere.isEmpty()) {
             return;
         }
 
-        Set<String> changed = changedPaths(status);
-
-        List<String> flowChanges = changed.stream().filter(p -> p.startsWith(THUB_DIR + "/")).toList();
-        List<String> otherChanges = changed.stream().filter(p -> !p.startsWith(THUB_DIR + "/")).toList();
-
         StringBuilder detail = new StringBuilder();
         if (!flowChanges.isEmpty()) {
-            detail.append("commit your flow changes first (").append(String.join(", ", flowChanges)).append(")");
+            detail.append("commit your flow changes first (")
+                    .append(String.join(", ", flowChanges.stream().sorted().toList())).append(")");
         }
-        if (!otherChanges.isEmpty()) {
+        if (!trackedElsewhere.isEmpty()) {
             if (!detail.isEmpty()) {
                 detail.append("; ");
             }
-            detail.append("and remove these files, which Flow Designer does not manage (")
-                    .append(String.join(", ", otherChanges)).append(")");
+            detail.append("and restore these tracked files, which Flow Designer does not manage (")
+                    .append(String.join(", ", trackedElsewhere)).append(")");
         }
 
         throw new GitSyncConflictException("pull",
@@ -843,29 +935,40 @@ public class GitServiceImpl implements GitService {
         if (last != null && last.isAfter(Instant.now().minus(FETCH_INTERVAL))) {
             return;
         }
-        lastFetchAt.put(workspace.id(), Instant.now());
-        fetchQuietly(git, workspace);
+        // Stamped only on success: a failed fetch that consumed the window would
+        // leave the behind count reading "in sync" until it expired
+        if (fetchQuietly(git, workspace)) {
+            lastFetchAt.put(workspace.id(), Instant.now());
+        }
     }
 
     /**
      * Updates the remote-tracking refs, tolerating an unreachable remote: the
      * status is still useful offline, only the behind count goes stale.
      */
-    private void fetchQuietly(Git git, WorkspaceInfo workspace) {
+    private boolean fetchQuietly(Git git, WorkspaceInfo workspace) {
         try {
             var fetchCommand = git.fetch()
                     // Status runs under the workspace lock, so an unresponsive
                     // remote must not be able to block saves indefinitely
                     .setTimeout(FETCH_TIMEOUT_SECONDS);
-            if (credentialsProvider != null) {
-                fetchCommand.setCredentialsProvider(credentialsProvider);
+            CredentialsProvider credentials = userOrServiceCredentials();
+            if (credentials != null) {
+                fetchCommand.setCredentialsProvider(credentials);
             }
             fetchCommand.call();
+            return true;
         } catch (GitAPIException | RuntimeException e) {
             // JGit wraps transport and IO failures in unchecked JGitInternalException;
             // an unreachable remote must leave the status readable, only staler
             log.debug("Could not refresh remote refs for workspace {}: {}", workspace.id(), e.getMessage());
+            return false;
         }
+    }
+
+    /** Whether a path belongs to a directory this application writes. */
+    static boolean isManaged(String path) {
+        return MANAGED_DIRS.stream().anyMatch(dir -> path.startsWith(dir + "/"));
     }
 
     /** Every path git would report as changed, in one sorted set. */
@@ -987,20 +1090,21 @@ public class GitServiceImpl implements GitService {
                 // a round-trip to the remote.
                 fetchIfStale(git, workspace);
 
-                // Only THUB/ is ever staged, so only THUB/ decides whether the
-                // workspace is clean — otherwise an unrelated file would leave the
-                // panel dirty forever and invite a chain of empty commits. Those
-                // files still block a pull, so they are reported separately rather
-                // than left invisible.
-                Status status = git.status().addPath(THUB_DIR).call();
-                Set<String> unmanaged = changedPaths(git.status().call()).stream()
-                        .filter(path -> !path.startsWith(THUB_DIR + "/"))
-                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
-                // Everything the user could still lose, in one sorted list
+                // One scan of the working tree, split in two: only the managed
+                // directories are ever staged, so only they decide whether the
+                // workspace is clean — an unrelated file would otherwise leave the
+                // panel dirty forever and invite a chain of empty commits. The rest
+                // is reported separately rather than left invisible.
                 // changedPaths includes getConflicting(): without it a workspace
                 // stuck mid-merge reports itself clean, hiding the files and
-                // disabling the very buttons needed to get out of it
-                Set<String> changed = changedPaths(status);
+                // disabling the very buttons needed to get out of it.
+                Set<String> allChanged = changedPaths(git.status().call());
+                Set<String> changed = allChanged.stream()
+                        .filter(GitServiceImpl::isManaged)
+                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+                Set<String> unmanaged = allChanged.stream()
+                        .filter(path -> !isManaged(path))
+                        .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
 
                 Repository repo = git.getRepository();
                 String branch = repo.getBranch();
@@ -1043,7 +1147,9 @@ public class GitServiceImpl implements GitService {
             deleteDirectory(workspace.path());
             // The lock stays in the map on purpose: removing it while holding it
             // lets a concurrent caller create a fresh lock and run alongside the
-            // deletion. One idle lock per user/branch is cheap.
+            // deletion — including a concurrent create, which would then clone
+            // twice into the same directory. The cost is one idle lock per
+            // user/branch pair seen since startup.
             log.info("Cleaned up workspace: {}", workspaceId);
         } finally {
             lock.unlock();
@@ -1053,7 +1159,7 @@ public class GitServiceImpl implements GitService {
     @Scheduled(fixedRateString = "${app.git.main-repo-refresh-interval:PT5M}")
     public void refreshMainRepo() {
         try {
-            pullMainRepo();
+            pullMainRepo(true);
         } catch (Exception e) {
             log.warn("Scheduled main repo refresh failed", e);
         }
@@ -1117,6 +1223,9 @@ public class GitServiceImpl implements GitService {
             return true;
         }
         try {
+            // Deliberately wider than requireCleanTreeForPull: a pull only needs the
+            // managed files to be clean because reset --hard leaves strays alone, but
+            // cleanup deletes the whole clone, so an unmanaged file is lost with it
             if (!git.status().call().isClean()) {
                 return true;
             }

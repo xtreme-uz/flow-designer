@@ -9,10 +9,11 @@
 const API_BASE = '/api';
 
 class ApiError extends Error {
-  constructor(message, errors = []) {
+  constructor(message, errors = [], status = 0) {
     super(message);
     this.name = 'ApiError';
     this.errors = errors;
+    this.status = status;
   }
 }
 
@@ -24,7 +25,7 @@ async function handleResponse(response) {
     const body = await response.json().catch(() => ({}));
     const message = body.detail || body.message || `HTTP ${response.status}: ${response.statusText}`;
     const errors = Array.isArray(body.errors) ? body.errors : [];
-    throw new ApiError(message, errors);
+    throw new ApiError(message, errors, response.status);
   }
 
   if (response.status === 204) {
@@ -172,6 +173,35 @@ export async function getWorkspaceFlow(flowName, branch) {
   const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}`, {
     credentials: 'include',
     headers: getReadHeaders(branch)
+  });
+  return handleResponse(response);
+}
+
+/**
+ * Canvas layout (node positions + the flow's node list). Kept apart from the
+ * THUB data so the configuration deployer never sees it.
+ */
+export async function getFlowLayoutFromMain(flowName) {
+  const response = await fetch(`${API_BASE}/flows/${encodeURIComponent(flowName)}/layout`, {
+    credentials: 'include'
+  });
+  return handleResponse(response);
+}
+
+export async function getWorkspaceFlowLayout(flowName, branch) {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}/layout`, {
+    credentials: 'include',
+    headers: getReadHeaders(branch)
+  });
+  return handleResponse(response);
+}
+
+export async function saveWorkspaceFlowLayout(flowName, layout, branch) {
+  const response = await fetch(`${API_BASE}/workspaces/flows/${encodeURIComponent(flowName)}/layout`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: getMutationHeaders(branch),
+    body: JSON.stringify(layout)
   });
   return handleResponse(response);
 }

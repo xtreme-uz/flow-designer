@@ -13,7 +13,7 @@ import '@xyflow/react/dist/style.css';
 import { useWorkspace } from './contexts/WorkspaceContext';
 import { useToast } from './contexts/ToastContext';
 import * as api from './services/api';
-import { thubToReactFlow, reactFlowToThub } from './utils/thubConverter';
+import { thubToReactFlow, reactFlowToThub, reactFlowToLayout } from './utils/thubConverter';
 import { applyDagreLayout } from './utils/layoutUtils';
 
 import InitialNode from './components/nodes/InitialNode';
@@ -40,6 +40,9 @@ export default function App() {
 
   // Flow state
   const [currentFlowName, setCurrentFlowName] = useState(null);
+  // Opened from the main-branch listing while on a feature branch: saving then
+  // replaces this branch's own copy, which the user has to agree to
+  const [openedFromMain, setOpenedFromMain] = useState(false);
   const [currentDeploymentData, setCurrentDeploymentData] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
@@ -77,12 +80,16 @@ export default function App() {
   }, [hasUnsavedChanges]);
 
   // Node and edge handlers.
-  // Only structural changes count as edits: React Flow also reports selection,
-  // dimension and drag changes, and node positions are recomputed by dagre
-  // rather than stored, so neither belongs in the unsaved-changes flag.
+  // Structural changes count as edits, and so does a finished drag now that
+  // positions are saved with the flow. Selection and the in-flight steps of a
+  // drag change nothing that is stored, so they are ignored.
   const onNodesChange = useCallback(
     (changes) => {
-      if (changes.some((c) => c.type === 'add' || c.type === 'remove' || c.type === 'replace')) {
+      const edited = changes.some((c) =>
+        c.type === 'add' || c.type === 'remove' || c.type === 'replace' ||
+        (c.type === 'position' && c.dragging === false)
+      );
+      if (edited) {
         markAsChanged();
       }
       setNodes((nds) => applyNodeChanges(changes, nds));
@@ -243,10 +250,11 @@ export default function App() {
       const positioned = applyDagreLayout(currentNodes, edges, { direction });
       return positioned;
     });
+    markAsChanged();
     if (reactFlowInstance) {
       setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 50);
     }
-  }, [edges, reactFlowInstance]);
+  }, [edges, reactFlowInstance, markAsChanged]);
 
   // Fetch available statuses
   const fetchStatuses = async () => {
@@ -296,27 +304,36 @@ export default function App() {
   };
 
   // Flow management functions
-  const loadFlow = async (flowName) => {
+  /**
+   * @param source 'main' or 'workspace' — which listing the flow was picked from.
+   *   The flow list offers both while on a feature branch, so guessing from the
+   *   current branch fetches the wrong copy, or 404s on a main-only flow.
+   */
+  const loadFlow = async (flowName, source = (isMainBranch ? 'main' : 'workspace')) => {
     // Returns whether the flow was actually opened, so the caller's modal can
     // stay put when the user backs out of the unsaved-changes prompt
     if (!confirmDiscardChanges('Open another flow')) return false;
     setLoading(true);
     try {
-      let deploymentData;
-      if (isMainBranch) {
-        deploymentData = await api.getFlowFromMain(flowName);
-      } else {
-        deploymentData = await api.getWorkspaceFlow(flowName, branch);
-      }
+      const [deploymentData, layout] = await Promise.all([
+        source === 'main'
+          ? api.getFlowFromMain(flowName)
+          : api.getWorkspaceFlow(flowName, branch),
+        // A missing or unreadable layout only costs the saved positions
+        (source === 'main'
+          ? api.getFlowLayoutFromMain(flowName)
+          : api.getWorkspaceFlowLayout(flowName, branch)).catch(() => null),
+      ]);
 
       // Store the raw deployment data for metadata editing
       setCurrentDeploymentData(deploymentData);
 
-      // Convert THUB data to React Flow nodes/edges with dagre layout
-      const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
+      // Convert THUB data to React Flow nodes/edges, keeping saved positions
+      const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData, layout);
       setNodes(flowNodes);
       setEdges(flowEdges);
       setCurrentFlowName(flowName);
+      setOpenedFromMain(source === 'main' && !isMainBranch);
       markAsSaved();
       fetchStatuses();
       return true;
@@ -350,6 +367,12 @@ export default function App() {
       return;
     }
 
+    if (openedFromMain && !window.confirm(
+      `This is the main-branch copy of "${currentFlowName}". Saving replaces this branch's version. Continue?`
+    )) {
+      return;
+    }
+
     setLoading(true);
     try {
       // Convert React Flow nodes/edges back to THUB deployment data
@@ -359,8 +382,39 @@ export default function App() {
         nodes, edges, currentFlowName, existingFlowType, existingAssignments
       );
 
-      await api.updateFlow(currentFlowName, deploymentData, branch);
-      setCurrentDeploymentData(deploymentData);
+      // A flow opened from the main branch may or may not already exist in this
+      // workspace — a feature branch cut from main carries all of them. Update
+      // first and create only when it really is not there.
+      let summary;
+      try {
+        summary = await api.updateFlow(currentFlowName, deploymentData, branch);
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        summary = await api.createFlow(currentFlowName, deploymentData, branch);
+      }
+      setOpenedFromMain(false);
+      // The canvas file holds the arrangement and the flow's node list, so losing
+      // it costs more than positions: a node with no action and no transition is
+      // only recorded there. The flow itself is already saved by this point.
+      try {
+        await api.saveWorkspaceFlowLayout(currentFlowName, reactFlowToLayout(nodes), branch);
+      } catch (layoutError) {
+        toast.error(
+          `Flow saved, but its canvas was not: ${layoutError.message}. ` +
+          'Save again — until it succeeds, node positions and any unconnected nodes are not stored.',
+          10000
+        );
+      }
+      // The server owns the audit fields, so take back what it stamped instead
+      // of showing the client's copy in the metadata panel until the next reload
+      setCurrentDeploymentData({
+        ...deploymentData,
+        flowType: {
+          ...deploymentData.flowType,
+          lastModifiedBy: summary?.lastModifiedBy ?? deploymentData.flowType?.lastModifiedBy,
+          lastModifiedAt: summary?.lastModifiedAt ?? deploymentData.flowType?.lastModifiedAt,
+        },
+      });
       markAsSaved();
       refreshStatusQuietly();
       toast.success('Flow saved successfully!');
@@ -395,9 +449,11 @@ export default function App() {
           component: 'THUB',
           categorization: {},
         },
+        // Blank descriptions on purpose: ACCEPTED and FINISHED are shared, and a
+        // canned description here would overwrite what other flows show
         flowStatuses: [
-          { id: 'ACCEPTED', description: 'Flow started' },
-          { id: 'FINISHED', description: 'Flow completed' },
+          { id: 'ACCEPTED', description: '' },
+          { id: 'FINISHED', description: '' },
         ],
         flowStatusActions: [],
         flowStatusTransitions: [],
@@ -409,6 +465,7 @@ export default function App() {
       // Convert to React Flow for canvas display
       const { nodes: flowNodes, edges: flowEdges } = thubToReactFlow(deploymentData);
       setCurrentFlowName(flowName);
+      setOpenedFromMain(false);
       setCurrentDeploymentData(deploymentData);
       setNodes(flowNodes);
       setEdges(flowEdges);
@@ -469,6 +526,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.renameFlow(currentFlowName, newName, branch);
+      setOpenedFromMain(false);
       refreshStatusQuietly();
       toast.success(`Flow renamed to '${newName}'`);
       setCurrentFlowName(newName);

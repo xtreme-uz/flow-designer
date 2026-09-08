@@ -83,6 +83,7 @@ class GitServiceImplTest {
                 mainRepoPath.toString(),
                 workspacesPath.toString(),
                 "master",
+                false,
                 new GitProperties.Credentials(null, null, null),
                 new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
         );
@@ -259,6 +260,17 @@ class GitServiceImplTest {
     class BranchPublicationTests {
 
         @Test
+        @DisplayName("Publishing the same branch twice does not trip over a leftover local ref")
+        void publishingLeavesNoLocalRefBehind() {
+            WorkspaceInfo source = gitService.getOrCreateWorkspace("republisher", "master");
+            gitService.createAndPushBranch(source, "feature/TASK-14-first");
+
+            // The remote already has it at this commit, so the second call is a
+            // no-op — it must not fail on a branch ref left behind by the first
+            assertDoesNotThrow(() -> gitService.createAndPushBranch(source, "feature/TASK-14-first"));
+        }
+
+        @Test
         @DisplayName("A new branch starts from the current branch's work, not the default branch")
         void newBranchCarriesCurrentWork() throws IOException {
             WorkspaceInfo source = gitService.getOrCreateWorkspace("brancher", "feature/TASK-11-source");
@@ -282,6 +294,17 @@ class GitServiceImplTest {
     @Nested
     @DisplayName("Pull Safety Tests")
     class PullSafetyTests {
+
+        @Test
+        @DisplayName("An untracked file it does not manage does not block a pull")
+        void strayUntrackedFileDoesNotBlockPull() throws IOException {
+            WorkspaceInfo workspace = gitService.getOrCreateWorkspace("stray-puller", "master");
+            // Nothing in the app can remove this, and reset --hard would not touch it
+            Files.writeString(workspace.path().resolve("notes.txt"), "scratch");
+
+            assertDoesNotThrow(() -> gitService.pull(workspace));
+            assertTrue(Files.exists(workspace.path().resolve("notes.txt")));
+        }
 
         @Test
         @DisplayName("Refuses to pull over uncommitted work instead of risking it")
@@ -315,6 +338,7 @@ class GitServiceImplTest {
                     mainRepoPath.toString(),
                     workspacesPath.toString(),
                     "master",
+                    false,
                     new GitProperties.Credentials(null, null, null),
                     new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true)
             ));

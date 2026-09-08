@@ -6,6 +6,12 @@ import java.time.Duration;
 
 /**
  * Configuration properties for Git operations.
+ *
+ * @param useUserCredentials push and pull as the signed-in user, using the access
+ *        token from their OAuth2 login, instead of the configured service
+ *        account. Requires an OAuth2 scope that grants repository write access
+ *        (GitLab: {@code write_repository}); with the default {@code read_user}
+ *        scope the token cannot push. Off by default.
  */
 @ConfigurationProperties(prefix = "app.git")
 public record GitProperties(
@@ -13,6 +19,7 @@ public record GitProperties(
         String mainRepoPath,
         String workspacesPath,
         String defaultBranch,
+        boolean useUserCredentials,
         Credentials credentials,
         Cleanup cleanup
 ) {

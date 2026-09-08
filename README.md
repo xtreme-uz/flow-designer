@@ -6,7 +6,7 @@ Visual editor for payment state machines. Create, edit, and manage payment flows
 
 - **Backend:** Spring Boot 4.1.1, Java 25 (LTS), JGit, Spring Security OAuth2
 - **Frontend:** React 19.2, React Flow 12.11, dagre (auto-layout), Vite 8
-- **Storage:** Git repository (no database)
+- **Storage:** Git repository (no database) — THUB data plus canvas layouts under `.flowdesigner/`
 - **Auth:** GitLab OAuth2 (gitlab.com or a self-hosted instance)
 
 ## Local Development

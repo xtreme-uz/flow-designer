@@ -62,11 +62,18 @@ export default function GitPanel({ hasUnsavedChanges }) {
       return;
     }
 
+    // Committing without the HEAD we last saw tells the server to skip the
+    // version check — exactly when our view of the workspace is unknown
+    if (!workspaceStatus?.currentVersion) {
+      toast.warning('Workspace status is unknown — refresh with ⟳ before committing.');
+      return;
+    }
+
     setIsCommitting(true);
     try {
       // Send the HEAD we last saw so the server refuses to commit over
       // someone else's work instead of silently stacking on top of it
-      await api.commitChanges(commitMessage, branch, workspaceStatus?.currentVersion ?? null);
+      await api.commitChanges(commitMessage, branch, workspaceStatus.currentVersion);
       setCommitMessage('');
       toast.success('Changes committed successfully');
       await refreshQuietly();
@@ -154,8 +161,8 @@ export default function GitPanel({ hasUnsavedChanges }) {
               )}
               {workspaceStatus.unmanagedFiles?.length > 0 && (
                 <div className="unmanaged-files">
-                  <span>These files are not part of any flow. Commit ignores them, but Pull
-                    will not run until they are removed:</span>
+                  <span>These files are not part of any flow, so Commit leaves them alone.
+                    Changes to files the repository already tracks will block Pull:</span>
                   <ul className="changed-files">
                     {workspaceStatus.unmanagedFiles.map((file) => (
                       <li key={file}>{file}</li>

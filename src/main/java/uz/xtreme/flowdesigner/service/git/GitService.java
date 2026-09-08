@@ -16,9 +16,17 @@ public interface GitService {
     void initMainRepo();
 
     /**
-     * Pulls latest changes to the main repository.
+     * Pulls latest changes to the main repository, at most once every 30 seconds.
+     * Reads of the main branch call this freely; the throttle keeps opening a
+     * flow from turning into several round-trips to the remote.
      */
     void pullMainRepo();
+
+    /**
+     * @param force bypass the throttle, for callers that must see the latest
+     *              state — the refresh after a push, or the scheduled refresh
+     */
+    void pullMainRepo(boolean force);
 
     /**
      * Gets or creates a workspace for the given user and branch.
@@ -80,6 +88,14 @@ public interface GitService {
      * @param filePatterns file patterns to add (e.g., "." for all, "flows/*.json")
      */
     void add(WorkspaceInfo workspace, String... filePatterns);
+
+    /**
+     * Stages everything this application writes — the THUB data files and the
+     * canvas layouts beside them — and nothing else in the clone.
+     *
+     * @param workspace the workspace
+     */
+    void addManagedFiles(WorkspaceInfo workspace);
 
     /**
      * Commits staged changes with optimistic locking and full audit trail.

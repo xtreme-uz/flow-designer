@@ -20,6 +20,14 @@ const RESULT_TYPES = [
  * this component by edge id, so selecting another edge remounts it with that
  * edge's values instead of cascading a render to copy them in.
  */
+/** Result types are one comma-separated field; other writers may add spaces. */
+function splitResultTypes(value) {
+  return (value ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 export default function EdgeEditor({ edge, onUpdate, onDelete, onClose }) {
   const [formData, setFormData] = useState(() => ({
     label: edge?.label || edge?.data?.actionResultTypeIds || 'success',
@@ -29,7 +37,7 @@ export default function EdgeEditor({ edge, onUpdate, onDelete, onClose }) {
 
   const handleResultTypeChange = (value, checked) => {
     setFormData(prev => {
-      const current = prev.actionResultTypeIds ? prev.actionResultTypeIds.split(',') : [];
+      const current = splitResultTypes(prev.actionResultTypeIds);
       let updated;
       if (checked) {
         updated = [...current, value];
@@ -85,7 +93,8 @@ export default function EdgeEditor({ edge, onUpdate, onDelete, onClose }) {
           <label>Result Types *</label>
           <div className="result-type-options">
             {RESULT_TYPES.map((type) => {
-              const selected = formData.actionResultTypeIds?.split(',').includes(type.value);
+              // THUB data written elsewhere may separate these with ", "
+              const selected = splitResultTypes(formData.actionResultTypeIds).includes(type.value);
               return (
                 <label
                   key={type.value}
