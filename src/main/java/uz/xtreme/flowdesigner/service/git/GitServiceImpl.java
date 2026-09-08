@@ -1012,6 +1012,12 @@ public class GitServiceImpl implements GitService {
                         // Check and delete under one lock hold: a save landing between
                         // the two would otherwise be deleted along with the workspace
                         withLock(workspace, () -> {
+                            // The filter above read a snapshot; the user may have
+                            // come back while this loop waited for the lock
+                            WorkspaceInfo current = workspaces.get(workspace.id());
+                            if (current == null || !current.lastAccessedAt().isBefore(cutoff)) {
+                                return;
+                            }
                             if (hasUnsavedWork(workspace)) {
                                 log.info("Keeping idle workspace {} — it has uncommitted or unpushed work",
                                         workspace.id());

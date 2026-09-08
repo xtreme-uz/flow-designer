@@ -28,12 +28,11 @@ public class FlowServiceImpl implements FlowService {
 
     private static final Pattern FLOW_NAME_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
     /**
-     * Deliberately permissive: these ids come from the shared FlowStatus file that
-     * predates Flow Designer, so anything a THUB status is actually called has to
-     * pass. It only rules out ids that could not be meant seriously — whitespace,
-     * separators, and the canvas's own placeholder node ids.
+     * The canvas's own node ids, which must never reach the FlowStatus file that
+     * every flow shares. Status ids are otherwise not policed: they come from data
+     * that predates Flow Designer, and rejecting one would make a flow the app
+     * never created permanently unsavable.
      */
-    private static final Pattern STATUS_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.\\-]*$");
     private static final Pattern CANVAS_NODE_ID_PATTERN = Pattern.compile("^node_\\d+$");
     private static final int MAX_FLOW_NAME_LENGTH = 100;
 
@@ -326,10 +325,7 @@ public class FlowServiceImpl implements FlowService {
             } else if (CANVAS_NODE_ID_PATTERN.matcher(status.id()).matches()) {
                 // FlowStatus records are shared by every flow, so an unnamed node
                 // would put its internal canvas id in front of everyone else
-                errors.add("Status '" + status.id() + "' has no status ID — open the node and give it one");
-            } else if (!STATUS_ID_PATTERN.matcher(status.id()).matches()) {
-                errors.add("Status ID '" + status.id() + "' may contain only letters, numbers, "
-                        + "underscores, dots and hyphens");
+                errors.add("A node has no status ID — open it and give it one");
             } else if (!statusIds.add(status.id())) {
                 errors.add("Duplicate status ID: " + status.id());
             }

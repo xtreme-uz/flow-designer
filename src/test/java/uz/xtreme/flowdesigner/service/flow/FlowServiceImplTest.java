@@ -614,7 +614,24 @@ class FlowServiceImplTest {
         }
 
         @Test
-        @DisplayName("Should reject a status ID that is not a valid identifier")
+        @DisplayName("Should accept a legacy status ID the app never created")
+        void validateAcceptsLegacyStatusId() {
+            ThubFlowType flowType = new ThubFlowType(
+                    "test", "2ND_LEG", "FINISHED", "Test",
+                    "1.0", "THUB", null, null, null, null, null
+            );
+            ThubDeploymentData data = new ThubDeploymentData(
+                    flowType,
+                    List.of(new ThubFlowStatus("2ND_LEG", "Second leg"),
+                            new ThubFlowStatus("FINISHED", "End")),
+                    List.of(), List.of(), List.of()
+            );
+
+            assertTrue(flowService.validateFlow(data).isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should reject a node that was never given a status ID")
         void validateMalformedStatusId() {
             ThubFlowType flowType = new ThubFlowType(
                     "test", "ACCEPTED", "FINISHED", "Test",
@@ -624,12 +641,12 @@ class FlowServiceImplTest {
                     flowType,
                     List.of(new ThubFlowStatus("ACCEPTED", "Start"),
                             new ThubFlowStatus("FINISHED", "End"),
-                            new ThubFlowStatus("node 0!", "Dropped but never named")),
+                            new ThubFlowStatus("node_0", "Dropped but never named")),
                     List.of(), List.of(), List.of()
             );
 
             List<String> errors = flowService.validateFlow(data);
-            assertTrue(errors.stream().anyMatch(e -> e.contains("node 0!")));
+            assertTrue(errors.stream().anyMatch(e -> e.contains("has no status ID")));
         }
 
         @Test
