@@ -38,6 +38,12 @@ server:
   forward-headers-strategy: native
 
 app:
+  auth:
+    # Who may sign in. Leave both empty only on an instance whose accounts are
+    # already the intended audience — otherwise every account the provider
+    # authenticates (on gitlab.com: anyone) can read and write flows.
+    allowed-usernames: ${AUTH_ALLOWED_USERNAMES:}
+    allowed-email-domains: ${AUTH_ALLOWED_EMAIL_DOMAINS:}
   git:
     remote-url: ${GIT_REMOTE_URL:}
     main-repo-path: ${GIT_MAIN_REPO_PATH:/tmp/app/flows-repo/main}

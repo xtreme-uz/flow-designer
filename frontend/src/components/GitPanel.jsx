@@ -8,7 +8,7 @@ import './GitPanel.css';
  * Git operations panel for commit/push workflow
  */
 export default function GitPanel({ hasUnsavedChanges, onRefresh }) {
-  const { userId, branch, workspaceStatus, isMainBranch, refreshStatus } = useWorkspace();
+  const { branch, workspaceStatus, isMainBranch, refreshStatus } = useWorkspace();
   const toast = useToast();
   const [commitMessage, setCommitMessage] = useState('');
   const [isCommitting, setIsCommitting] = useState(false);

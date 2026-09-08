@@ -35,7 +35,7 @@ let nodeId = 0;
 const getId = () => `node_${nodeId++}`;
 
 export default function App() {
-  const { userId, branch, isMainBranch } = useWorkspace();
+  const { branch, isMainBranch } = useWorkspace();
   const toast = useToast();
 
   // Flow state
@@ -56,39 +56,77 @@ export default function App() {
   const [showNewFlowModal, setShowNewFlowModal] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Track changes
-  useEffect(() => {
-    setHasUnsavedChanges(true);
-  }, [nodes, edges]);
-
   // Reset unsaved changes when flow is loaded or saved
   const markAsSaved = useCallback(() => {
     setHasUnsavedChanges(false);
   }, []);
 
-  // Node and edge handlers
+  const markAsChanged = useCallback(() => {
+    setHasUnsavedChanges(true);
+  }, []);
+
+  // Warn before leaving with work that is not in the workspace yet
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const warn = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [hasUnsavedChanges]);
+
+  // Node and edge handlers.
+  // Only structural changes count as edits: React Flow also reports selection,
+  // dimension and drag changes, and node positions are recomputed by dagre
+  // rather than stored, so neither belongs in the unsaved-changes flag.
   const onNodesChange = useCallback(
-    (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    []
+    (changes) => {
+      if (changes.some((c) => c.type === 'add' || c.type === 'remove' || c.type === 'replace')) {
+        markAsChanged();
+      }
+      setNodes((nds) => applyNodeChanges(changes, nds));
+    },
+    [markAsChanged]
   );
 
   const onEdgesChange = useCallback(
-    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    []
+    (changes) => {
+      if (changes.some((c) => c.type === 'add' || c.type === 'remove' || c.type === 'replace')) {
+        markAsChanged();
+      }
+      setEdges((eds) => applyEdgeChanges(changes, eds));
+    },
+    [markAsChanged]
   );
 
   const onConnect = useCallback(
-    (params) => setEdges((eds) => addEdge({
-      ...params,
-      type: 'smoothstep',
-      animated: true,
-      label: 'success',
-      data: {
-        actionResultTypeIds: 'success',
-        storeAsRequestResult: true
+    (params) => setEdges((eds) => {
+      // THUB stores one transition per (status, next status) pair, so a second
+      // edge between the same two nodes would silently replace the first on save.
+      // Multiple result types belong on one edge, via the edge editor.
+      const duplicate = eds.some(
+        (e) => e.source === params.source && e.target === params.target
+      );
+      if (duplicate) {
+        toast.warning(
+          'These statuses are already connected. Open the existing transition to add more result types.'
+        );
+        return eds;
       }
-    }, eds)),
-    []
+      markAsChanged();
+      return addEdge({
+        ...params,
+        type: 'smoothstep',
+        animated: true,
+        label: 'success',
+        data: {
+          actionResultTypeIds: 'success',
+          storeAsRequestResult: true
+        }
+      }, eds);
+    }),
+    [toast, markAsChanged]
   );
 
   const onNodeClick = useCallback((event, node) => {
@@ -135,8 +173,9 @@ export default function App() {
       };
 
       setNodes((nds) => nds.concat(newNode));
+      markAsChanged();
     },
-    [reactFlowInstance]
+    [reactFlowInstance, markAsChanged]
   );
 
   const onNodeUpdate = useCallback((nodeId, formData) => {
@@ -159,7 +198,8 @@ export default function App() {
       })
     );
     setSelectedNode(null);
-  }, []);
+    markAsChanged();
+  }, [markAsChanged]);
 
   const onEditorClose = useCallback(() => {
     setSelectedNode(null);
@@ -183,12 +223,14 @@ export default function App() {
       })
     );
     setSelectedEdge(null);
-  }, []);
+    markAsChanged();
+  }, [markAsChanged]);
 
   const onEdgeDelete = useCallback((edgeId) => {
     setEdges((eds) => eds.filter((edge) => edge.id !== edgeId));
     setSelectedEdge(null);
-  }, []);
+    markAsChanged();
+  }, [markAsChanged]);
 
   const onEdgeEditorClose = useCallback(() => {
     setSelectedEdge(null);
@@ -220,8 +262,35 @@ export default function App() {
     }
   };
 
+  // A loaded flow belongs to the branch it came from. Clear it when the branch
+  // changes, otherwise the next save writes the previous branch's flow here.
+  const previousBranch = useRef(null);
+  useEffect(() => {
+    if (!branch) return;
+    if (previousBranch.current === null) {
+      previousBranch.current = branch;
+      return;
+    }
+    if (previousBranch.current === branch) return;
+
+    previousBranch.current = branch;
+    setCurrentFlowName(null);
+    setCurrentDeploymentData(null);
+    setNodes([]);
+    setEdges([]);
+    setSelectedNode(null);
+    setSelectedEdge(null);
+    markAsSaved();
+  }, [branch, markAsSaved]);
+
+  const confirmDiscardChanges = (action) => {
+    if (!hasUnsavedChanges) return true;
+    return window.confirm(`You have unsaved changes. ${action} anyway?`);
+  };
+
   // Flow management functions
   const loadFlow = async (flowName) => {
+    if (!confirmDiscardChanges('Open another flow')) return;
     setLoading(true);
     try {
       let deploymentData;
@@ -263,7 +332,10 @@ export default function App() {
     try {
       // Convert React Flow nodes/edges back to THUB deployment data
       const existingFlowType = currentDeploymentData?.flowType || null;
-      const deploymentData = reactFlowToThub(nodes, edges, currentFlowName, existingFlowType);
+      const existingAssignments = currentDeploymentData?.flowAssignments || [];
+      const deploymentData = reactFlowToThub(
+        nodes, edges, currentFlowName, existingFlowType, existingAssignments
+      );
 
       await api.updateFlow(currentFlowName, deploymentData, branch);
       setCurrentDeploymentData(deploymentData);
@@ -281,6 +353,7 @@ export default function App() {
   };
 
   const createNewFlow = async (flowName, description) => {
+    if (!confirmDiscardChanges('Create a new flow')) return;
     if (isMainBranch) {
       toast.warning('Cannot create flows in main branch. Please switch to a feature branch.');
       return;
@@ -359,8 +432,8 @@ export default function App() {
       if (!prev) return prev;
       return { ...prev, flowType: { ...prev.flowType, ...updatedFlowType } };
     });
-    setHasUnsavedChanges(true);
-  }, []);
+    markAsChanged();
+  }, [markAsChanged]);
 
   const renameFlow = async (newName) => {
     if (!currentFlowName) {
@@ -393,7 +466,10 @@ export default function App() {
     setLoading(true);
     try {
       const existingFlowType = currentDeploymentData?.flowType || null;
-      const deploymentData = reactFlowToThub(nodes, edges, currentFlowName, existingFlowType);
+      const existingAssignments = currentDeploymentData?.flowAssignments || [];
+      const deploymentData = reactFlowToThub(
+        nodes, edges, currentFlowName, existingFlowType, existingAssignments
+      );
       const result = await api.validateFlow(deploymentData);
 
       if (result.valid) {

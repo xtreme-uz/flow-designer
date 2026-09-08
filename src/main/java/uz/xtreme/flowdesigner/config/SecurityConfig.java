@@ -19,6 +19,12 @@ import java.io.IOException;
 @EnableWebSecurity
 public class SecurityConfig {
 
+    private final AllowlistOAuth2UserService oauth2UserService;
+
+    public SecurityConfig(AllowlistOAuth2UserService oauth2UserService) {
+        this.oauth2UserService = oauth2UserService;
+    }
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         var csrfHandler = new CsrfTokenRequestAttributeHandler();
@@ -38,6 +44,9 @@ public class SecurityConfig {
             )
             .oauth2Login(oauth2 -> oauth2
                 .defaultSuccessUrl("/", true)
+                // Rejects accounts outside the allowlist before a session exists
+                .userInfoEndpoint(userInfo -> userInfo.userService(oauth2UserService))
+                .failureUrl("/?error=login_denied")
             )
             .logout(logout -> logout
                 .logoutUrl("/logout")

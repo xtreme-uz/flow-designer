@@ -26,6 +26,7 @@ public class FlowServiceImpl implements FlowService {
     private static final Logger log = LoggerFactory.getLogger(FlowServiceImpl.class);
 
     private static final Pattern FLOW_NAME_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
+    private static final Pattern STATUS_ID_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
     private static final int MAX_FLOW_NAME_LENGTH = 100;
 
     private final GitProperties gitProperties;
@@ -304,8 +305,13 @@ public class FlowServiceImpl implements FlowService {
         for (ThubFlowStatus status : data.flowStatuses()) {
             if (status.id() == null || status.id().isBlank()) {
                 errors.add("Status ID cannot be null or empty");
-            } else {
-                statusIds.add(status.id());
+            } else if (!STATUS_ID_PATTERN.matcher(status.id()).matches()) {
+                // FlowStatus records are shared by every flow, so a placeholder id
+                // from an unfinished node would pollute the whole repository
+                errors.add("Status ID '" + status.id() + "' must start with a letter and contain only "
+                        + "letters, numbers, underscores and hyphens");
+            } else if (!statusIds.add(status.id())) {
+                errors.add("Duplicate status ID: " + status.id());
             }
         }
 
@@ -317,12 +323,21 @@ public class FlowServiceImpl implements FlowService {
         }
 
         // Validate transitions reference existing statuses
+        Set<String> transitionPairs = new HashSet<>();
         for (ThubFlowStatusTransition transition : data.flowStatusTransitions()) {
             if (transition.flowStatusId() != null && !statusIds.contains(transition.flowStatusId())) {
                 errors.add("Transition references non-existent status: " + transition.flowStatusId());
             }
             if (transition.nextFlowStatusId() != null && !statusIds.contains(transition.nextFlowStatusId())) {
                 errors.add("Transition references non-existent next status: " + transition.nextFlowStatusId());
+            }
+            // A THUB transition is keyed by (flowType, status, nextStatus): a second
+            // transition between the same pair would overwrite the first on write,
+            // silently dropping one of the result types
+            if (transition.flowStatusId() != null && transition.nextFlowStatusId() != null
+                    && !transitionPairs.add(transition.flowStatusId() + " -> " + transition.nextFlowStatusId())) {
+                errors.add("Duplicate transition '" + transition.flowStatusId() + " -> "
+                        + transition.nextFlowStatusId() + "' — list every result type on a single transition");
             }
         }
 
