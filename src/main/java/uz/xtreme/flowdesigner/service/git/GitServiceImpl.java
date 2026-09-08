@@ -602,6 +602,9 @@ public class GitServiceImpl implements GitService {
                     deleteLocalBranch(git, branchName);
                     throw e;
                 }
+                // The branch lives on the remote now, and its own workspace clones
+                // it from there; keeping the ref here only breaks a later re-create
+                deleteLocalBranch(git, branchName);
                 updateLastAccessed(workspace);
             } catch (TransportException e) {
                 throw new GitAuthenticationException("Failed to publish branch: " + branchName, e);
@@ -752,31 +755,46 @@ public class GitServiceImpl implements GitService {
     }
 
     /**
-     * Refuses a pull that could cost the user work. Names the files, and
-     * distinguishes the app's own data from anything else in the clone, because
-     * the two need different answers: commit the flows, remove the strays.
+     * Refuses a pull that could cost the user work.
+     *
+     * <p>Recovery from a failed merge is a repository-wide {@code reset --hard},
+     * which reverts tracked files and leaves untracked ones alone. So a pull is
+     * blocked by uncommitted changes to the flows, and by tracked changes
+     * anywhere else in the clone — but an untracked stray file, which the user
+     * has no way to remove through this application, is not in danger and does
+     * not stand in the way.
      */
     private void requireCleanTreeForPull(Git git) throws GitAPIException {
         Status status = git.status().call();
-        if (status.isClean()) {
+
+        Set<String> tracked = new TreeSet<>();
+        tracked.addAll(status.getConflicting());
+        tracked.addAll(status.getAdded());
+        tracked.addAll(status.getChanged());
+        tracked.addAll(status.getRemoved());
+        tracked.addAll(status.getModified());
+        tracked.addAll(status.getMissing());
+
+        List<String> flowChanges = new ArrayList<>(status.getUntracked().stream()
+                .filter(GitServiceImpl::isManaged).toList());
+        flowChanges.addAll(tracked.stream().filter(GitServiceImpl::isManaged).toList());
+        List<String> trackedElsewhere = tracked.stream().filter(path -> !isManaged(path)).toList();
+
+        if (flowChanges.isEmpty() && trackedElsewhere.isEmpty()) {
             return;
         }
 
-        Set<String> changed = changedPaths(status);
-
-        List<String> flowChanges = changed.stream().filter(GitServiceImpl::isManaged).toList();
-        List<String> otherChanges = changed.stream().filter(path -> !isManaged(path)).toList();
-
         StringBuilder detail = new StringBuilder();
         if (!flowChanges.isEmpty()) {
-            detail.append("commit your flow changes first (").append(String.join(", ", flowChanges)).append(")");
+            detail.append("commit your flow changes first (")
+                    .append(String.join(", ", flowChanges.stream().sorted().toList())).append(")");
         }
-        if (!otherChanges.isEmpty()) {
+        if (!trackedElsewhere.isEmpty()) {
             if (!detail.isEmpty()) {
                 detail.append("; ");
             }
-            detail.append("and remove these files, which Flow Designer does not manage (")
-                    .append(String.join(", ", otherChanges)).append(")");
+            detail.append("and restore these tracked files, which Flow Designer does not manage (")
+                    .append(String.join(", ", trackedElsewhere)).append(")");
         }
 
         throw new GitSyncConflictException("pull",

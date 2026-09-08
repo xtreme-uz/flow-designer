@@ -434,9 +434,11 @@ export default function App() {
           component: 'THUB',
           categorization: {},
         },
+        // Blank descriptions on purpose: ACCEPTED and FINISHED are shared, and a
+        // canned description here would overwrite what other flows show
         flowStatuses: [
-          { id: 'ACCEPTED', description: 'Flow started' },
-          { id: 'FINISHED', description: 'Flow completed' },
+          { id: 'ACCEPTED', description: '' },
+          { id: 'FINISHED', description: '' },
         ],
         flowStatusActions: [],
         flowStatusTransitions: [],
@@ -509,6 +511,7 @@ export default function App() {
     setLoading(true);
     try {
       await api.renameFlow(currentFlowName, newName, branch);
+      setOpenedFromMain(false);
       refreshStatusQuietly();
       toast.success(`Flow renamed to '${newName}'`);
       setCurrentFlowName(newName);

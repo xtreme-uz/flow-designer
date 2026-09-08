@@ -179,10 +179,16 @@ public class FlowServiceImpl implements FlowService {
         flowTypes.put(ThubDataService.flowTypeKey(flowTypeId), deploymentData.flowType());
         thubDataService.writeFlowTypes(basePath, flowTypes);
 
-        // Merge FlowStatuses (shared — add/update, don't remove others)
+        // Merge FlowStatuses. They are shared by every flow, so a description that
+        // arrives blank leaves the stored one alone: only a description the user
+        // actually typed should reach the other flows using that status.
         Map<String, ThubFlowStatus> statuses = thubDataService.readFlowStatuses(basePath);
         for (ThubFlowStatus status : deploymentData.flowStatuses()) {
-            statuses.put(ThubDataService.flowStatusKey(status.id()), status);
+            String key = ThubDataService.flowStatusKey(status.id());
+            ThubFlowStatus stored = statuses.get(key);
+            boolean keepStoredDescription = stored != null
+                    && (status.description() == null || status.description().isBlank());
+            statuses.put(key, keepStoredDescription ? stored : status);
         }
         thubDataService.writeFlowStatuses(basePath, statuses);
 
