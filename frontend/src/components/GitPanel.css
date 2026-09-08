@@ -253,3 +253,46 @@
 .info-box p:last-child {
   margin-bottom: 0;
 }
+
+.changed-files {
+  margin: 0.15rem 0 0.35rem;
+  padding-left: 1.1rem;
+  list-style: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: #64748b;
+  max-height: 6.5rem;
+  overflow-y: auto;
+}
+
+.changed-files li {
+  overflow-wrap: anywhere;
+}
+
+.git-panel .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.refresh-btn {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

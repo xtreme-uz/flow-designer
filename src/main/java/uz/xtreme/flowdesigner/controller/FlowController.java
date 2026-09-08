@@ -8,17 +8,19 @@ import uz.xtreme.flowdesigner.service.flow.FlowService;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubDeploymentData;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowStatus;
+import uz.xtreme.flowdesigner.service.flow.dto.thub.ThubFlowType;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
 import uz.xtreme.flowdesigner.service.git.GitService;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
+import uz.xtreme.flowdesigner.service.git.WorkspaceStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -87,7 +89,7 @@ public class FlowController {
     // ==================== Workspace Management ====================
 
     @PostMapping("/workspaces")
-    public ResponseEntity<WorkspaceInfo> getOrCreateWorkspace(
+    public ResponseEntity<WorkspaceResponse> getOrCreateWorkspace(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestBody CreateWorkspaceRequest request) {
 
@@ -100,28 +102,27 @@ public class FlowController {
         }
 
         WorkspaceInfo workspace = gitService.getOrCreateWorkspace(userId, branchName);
-        return ResponseEntity.status(HttpStatus.CREATED).body(workspace);
+        return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(workspace));
     }
 
     @GetMapping("/workspaces")
-    public List<WorkspaceInfo> listWorkspaces(
+    public List<WorkspaceResponse> listWorkspaces(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId) {
 
         log.debug("Listing workspaces for user '{}'", userId);
         return gitService.getAllWorkspaces().stream()
                 .filter(w -> w.userId().equals(userId))
+                .map(WorkspaceResponse::from)
                 .toList();
     }
 
     @GetMapping("/workspaces/current")
-    public WorkspaceInfo getCurrentWorkspace(
+    public WorkspaceResponse getCurrentWorkspace(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName) {
 
         log.debug("Getting workspace for user '{}', branch '{}'", userId, branchName);
-        return gitService.getWorkspace(userId, branchName)
-                .orElseThrow(() -> new WorkspaceNotFoundException(
-                        WorkspaceInfo.createId(userId, branchName)));
+        return WorkspaceResponse.from(getWorkspaceOrThrow(userId, branchName));
     }
 
     @DeleteMapping("/workspaces")
@@ -183,7 +184,9 @@ public class FlowController {
             throw new FlowValidationException("Flow with name '" + flowTypeId + "' already exists");
         }
 
-        ThubDeploymentData deploymentData = request.deploymentData();
+        // Audit fields are the server's to set — never trust what the client sent
+        ThubDeploymentData requestData = request.deploymentData();
+        ThubDeploymentData deploymentData = withCreationAudit(requestData, userId, flowTypeId);
         flowService.saveFlow(workspace, flowTypeId, deploymentData);
 
         FlowSummary summary = FlowSummary.from(deploymentData.flowType());
@@ -201,14 +204,19 @@ public class FlowController {
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
 
-        if (!flowService.flowExists(workspace, name)) {
-            throw new FlowNotFoundException(name, workspace.id());
-        }
+        ThubDeploymentData stored = flowService.getFlow(workspace, name)
+                .orElseThrow(() -> new FlowNotFoundException(name, workspace.id()));
 
         ThubDeploymentData deploymentData = request.deploymentData();
+        if (deploymentData == null || deploymentData.flowType() == null) {
+            throw new FlowValidationException("Flow type cannot be null");
+        }
 
-        // Update lastModifiedBy on FlowType
-        var updatedFlowType = deploymentData.flowType().withModification(userId);
+        // Creation audit comes from the stored record, never from the request: the
+        // client rebuilds the flow type from its own canvas state and would blank
+        // it out — or claim someone else wrote the flow
+        var updatedFlowType = withStoredCreationAudit(deploymentData.flowType(), stored.flowType(), name)
+                .withModification(userId);
         ThubDeploymentData updatedData = new ThubDeploymentData(
                 updatedFlowType,
                 deploymentData.flowStatuses(),
@@ -282,10 +290,12 @@ public class FlowController {
         String authorEmail = (userEmail != null && !userEmail.isBlank()) ? userEmail : userId + "@flowdesigner.local";
         AuditInfo auditInfo = AuditInfo.of(userId, authorName, authorEmail);
 
-        // Stage all changes in THUB directory
-        gitService.add(workspace, "THUB/");
-
-        String commitHash = gitService.commit(workspace, request.message(), auditInfo, null);
+        // Stage and commit as one unit so a concurrent save cannot slip into the
+        // staged tree between the two steps
+        String commitHash = gitService.withWorkspaceLock(workspace, () -> {
+            gitService.add(workspace, "THUB/");
+            return gitService.commit(workspace, request.message(), auditInfo, request.expectedVersion());
+        });
         return new CommitResponse(commitHash, request.message());
     }
 
@@ -322,25 +332,32 @@ public class FlowController {
     }
 
     @GetMapping("/workspaces/status")
-    public Map<String, Object> getWorkspaceStatus(
+    public WorkspaceStatusResponse getWorkspaceStatus(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String branchName) {
 
         log.debug("Getting status for workspace user '{}', branch '{}'", userId, branchName);
 
         WorkspaceInfo workspace = getWorkspaceOrThrow(userId, branchName);
-        String currentVersion = gitService.getHeadCommit(workspace);
+        WorkspaceStatus status = gitService.getStatus(workspace);
 
-        return Map.of(
-                "workspaceId", workspace.id(),
-                "branch", workspace.branchName(),
-                "currentVersion", currentVersion,
-                "lastAccessed", workspace.lastAccessedAt()
+        return new WorkspaceStatusResponse(
+                workspace.id(),
+                // The repository's own branch, not the registry's: if they ever
+                // diverge, the client should see the truth
+                status.branchName(),
+                status.headCommit(),
+                status.changedFiles(),
+                status.clean(),
+                status.aheadCount(),
+                status.behindCount(),
+                status.hasUpstream(),
+                workspace.lastAccessedAt()
         );
     }
 
     @PostMapping("/workspaces/branch")
-    public ResponseEntity<WorkspaceInfo> createBranch(
+    public ResponseEntity<WorkspaceResponse> createBranch(
             @RequestHeader(value = USER_ID_HEADER, defaultValue = DEFAULT_USER) String userId,
             @RequestHeader(value = BRANCH_HEADER, defaultValue = DEFAULT_BRANCH) String currentBranch,
             @RequestBody CreateBranchRequest request) {
@@ -354,10 +371,10 @@ public class FlowController {
         }
 
         WorkspaceInfo currentWorkspace = getWorkspaceOrThrow(userId, currentBranch);
-        gitService.createBranch(currentWorkspace, request.newBranchName());
+        gitService.createAndPushBranch(currentWorkspace, request.newBranchName());
         WorkspaceInfo newWorkspace = gitService.getOrCreateWorkspace(userId, request.newBranchName());
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(newWorkspace);
+        return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(newWorkspace));
     }
 
     // ==================== Helper Methods ====================
@@ -366,6 +383,64 @@ public class FlowController {
         return gitService.getWorkspace(userId, branchName)
                 .orElseThrow(() -> new WorkspaceNotFoundException(
                         WorkspaceInfo.createId(userId, branchName)));
+    }
+
+    /**
+     * Restores createdBy/createdAt from the record already on disk, so an update
+     * cannot rewrite — or erase — who first created the flow.
+     */
+    private ThubFlowType withStoredCreationAudit(ThubFlowType incoming, ThubFlowType stored, String flowTypeId) {
+        if (stored == null) {
+            return incoming;
+        }
+        return new ThubFlowType(
+                // The record is keyed by the flow being saved; a body claiming a
+                // different id would list under a name that then 404s
+                flowTypeId,
+                incoming.initialFlowStatusId(),
+                incoming.finalFlowStatusId(),
+                incoming.description(),
+                incoming.version(),
+                incoming.component(),
+                stored.createdBy(),
+                stored.createdAt(),
+                incoming.lastModifiedBy(),
+                incoming.lastModifiedAt(),
+                incoming.categorization()
+        );
+    }
+
+    /**
+     * Stamps createdBy/createdAt (and the matching modification fields) from the
+     * authenticated user, replacing whatever the client sent.
+     */
+    private ThubDeploymentData withCreationAudit(ThubDeploymentData data, String userId, String flowTypeId) {
+        if (data == null || data.flowType() == null) {
+            return data;
+        }
+        var flowType = data.flowType();
+        Instant now = Instant.now();
+        var stamped = new ThubFlowType(
+                // Keyed by the requested flow name, never by what the body claims
+                flowTypeId,
+                flowType.initialFlowStatusId(),
+                flowType.finalFlowStatusId(),
+                flowType.description(),
+                flowType.version(),
+                flowType.component(),
+                userId,
+                now,
+                userId,
+                now,
+                flowType.categorization()
+        );
+        return new ThubDeploymentData(
+                stamped,
+                data.flowStatuses(),
+                data.flowStatusActions(),
+                data.flowStatusTransitions(),
+                data.flowAssignments()
+        );
     }
 
     private List<String> validateBranchName(String branchName) {
@@ -393,7 +468,11 @@ public class FlowController {
 
     public record RenameFlowRequest(String newName) {}
 
-    public record CommitRequest(String message) {}
+    /**
+     * @param expectedVersion HEAD the client last saw; when present the commit is
+     *                        rejected with 409 if the workspace moved on since.
+     */
+    public record CommitRequest(String message, String expectedVersion) {}
 
     public record ValidationResponse(boolean valid, List<String> errors) {}
 
@@ -404,4 +483,37 @@ public class FlowController {
     public record PullResponse(boolean success, String message) {}
 
     public record ConfigResponse(String defaultBranch) {}
+
+    /**
+     * Workspace as the client sees it. Deliberately without the on-disk path:
+     * the server's filesystem layout is nothing the browser needs.
+     */
+    public record WorkspaceResponse(
+            String id,
+            String userId,
+            String branchName,
+            Instant createdAt,
+            Instant lastAccessedAt
+    ) {
+        static WorkspaceResponse from(WorkspaceInfo workspace) {
+            return new WorkspaceResponse(
+                    workspace.id(),
+                    workspace.userId(),
+                    workspace.branchName(),
+                    workspace.createdAt(),
+                    workspace.lastAccessedAt());
+        }
+    }
+
+    public record WorkspaceStatusResponse(
+            String workspaceId,
+            String branch,
+            String currentVersion,
+            List<String> changedFiles,
+            boolean clean,
+            int aheadCount,
+            int behindCount,
+            boolean hasUpstream,
+            Instant lastAccessed
+    ) {}
 }

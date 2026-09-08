@@ -23,6 +23,7 @@
         <npm.version>10.9.0</npm.version>
         <jgit.version>7.5.0.202512021534-r</jgit.version>
         <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
+        <skipTests>false</skipTests>
     </properties>
 
     <dependencies>
@@ -112,6 +113,17 @@
                         </goals>
                         <configuration>
                             <arguments>install</arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>npm test</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>run test</arguments>
+                            <skip>${skipTests}</skip>
                         </configuration>
                     </execution>
                     <execution>

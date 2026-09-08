@@ -20,7 +20,7 @@ export default function Toolbar({ onArrange }) {
           className="toolbar-item initial-item"
           draggable
           onDragStart={(e) => onDragStart(e, 'initialNode', {
-            statusId: 'NEW_STATUS',
+            statusId: '',
             description: 'Initial status',
             isInitial: true,
             isFinal: false
@@ -34,7 +34,7 @@ export default function Toolbar({ onArrange }) {
           className="toolbar-item status-item"
           draggable
           onDragStart={(e) => onDragStart(e, 'statusNode', {
-            statusId: 'NEW_STATUS',
+            statusId: '',
             description: 'Flow status',
             isInitial: false,
             isFinal: false

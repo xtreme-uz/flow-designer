@@ -55,6 +55,17 @@ public interface GitService {
     void createBranch(WorkspaceInfo workspace, String branchName);
 
     /**
+     * Creates a branch at the workspace's current HEAD and publishes it, without
+     * moving this workspace off its own branch. Publishing matters: a workspace
+     * for the new branch is a fresh clone, so an unpublished branch would start
+     * from the default branch instead of the work it was branched from.
+     *
+     * @param workspace  the workspace to branch from
+     * @param branchName the new branch name
+     */
+    void createAndPushBranch(WorkspaceInfo workspace, String branchName);
+
+    /**
      * Switches to a different branch in the workspace.
      *
      * @param workspace  the workspace
@@ -83,20 +94,6 @@ public interface GitService {
     String commit(WorkspaceInfo workspace, String message, AuditInfo auditInfo, String expectedVersion);
 
     /**
-     * Commits staged changes with optimistic locking (simple version without full audit).
-     *
-     * @param workspace       the workspace
-     * @param message         the commit message
-     * @param authorName      the author name
-     * @param authorEmail     the author email
-     * @param expectedVersion the expected HEAD commit hash (for optimistic locking), or null to skip check
-     * @return the new commit hash
-     * @deprecated Use {@link #commit(WorkspaceInfo, String, AuditInfo, String)} for full audit trail
-     */
-    @Deprecated
-    String commit(WorkspaceInfo workspace, String message, String authorName, String authorEmail, String expectedVersion);
-
-    /**
      * Pushes commits to remote.
      *
      * @param workspace the workspace
@@ -110,6 +107,14 @@ public interface GitService {
      * @return the HEAD commit hash
      */
     String getHeadCommit(WorkspaceInfo workspace);
+
+    /**
+     * Reports what is uncommitted and unpushed in the workspace.
+     *
+     * @param workspace the workspace
+     * @return the workspace status
+     */
+    WorkspaceStatus getStatus(WorkspaceInfo workspace);
 
     /**
      * Removes a specific workspace.
@@ -131,6 +136,22 @@ public interface GitService {
      * @return collection of all workspace info
      */
     Collection<WorkspaceInfo> getAllWorkspaces();
+
+    /**
+     * Runs an action holding the workspace lock, so that a multi-step operation
+     * (read files, write files, stage, commit) cannot interleave with another
+     * request on the same workspace. The lock is reentrant: nested calls into
+     * this service from within the action are safe.
+     *
+     * @param workspace the workspace to lock
+     * @param action    the work to run under the lock
+     */
+    void withWorkspaceLock(WorkspaceInfo workspace, Runnable action);
+
+    /**
+     * Value-returning variant of {@link #withWorkspaceLock(WorkspaceInfo, Runnable)}.
+     */
+    <T> T withWorkspaceLock(WorkspaceInfo workspace, java.util.function.Supplier<T> action);
 
     /**
      * Lists all remote branch names from the main repository.

@@ -112,3 +112,16 @@
   color: #6b7280;
   font-size: 0.82rem;
 }
+
+.login-error {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid #f0b4b0;
+  border-left: 3px solid #a32b22;
+  border-radius: 4px;
+  background: #fdf1f0;
+  color: #7d211a;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  text-align: left;
+}

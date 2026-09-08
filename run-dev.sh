@@ -13,6 +13,11 @@ export GITLAB_CLIENT_ID=<gitlab-application-client-id>
 export GITLAB_CLIENT_SECRET=<gitlab-application-client-secret>
 export GITLAB_REDIRECT_URL=https://flowdesigner.local:8443/login/oauth2/code/gitlab
 
+# Who may sign in. Leave empty and any account the provider authenticates gets
+# read/write access to the flows repository.
+export AUTH_ALLOWED_USERNAMES=<comma-separated-gitlab-usernames>
+export AUTH_ALLOWED_EMAIL_DOMAINS=<comma-separated-email-domains>
+
 export KEYSTORE_FILE="$HOME/.flowdesigner/dev-keystore.p12"
 export KEYSTORE_PASS="flowdesigner-dev"
 

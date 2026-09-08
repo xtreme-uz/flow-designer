@@ -9,8 +9,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -33,6 +35,8 @@ public class ThubDataServiceImpl implements ThubDataService {
     private static final Logger log = LoggerFactory.getLogger(ThubDataServiceImpl.class);
 
     static final String THUB_DIR = "THUB";
+
+    private static final String TEMP_SUFFIX = "-data.json.tmp";
 
     private final ObjectMapper objectMapper;
 
@@ -125,9 +129,52 @@ public class ThubDataServiceImpl implements ThubDataService {
             }
             Path dataFile = thubDir.resolve(tableName + "-data.json");
             DataFileWrapper<T> wrapper = new DataFileWrapper<>(new TreeMap<>(data != null ? data : Map.of()));
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(dataFile.toFile(), wrapper);
+
+            // Write beside the target and move into place, so a failure mid-write
+            // leaves the previous file intact instead of a truncated one. The temp
+            // name is fixed per table, and any file orphaned by a crash is swept
+            // here — left behind it would keep the workspace looking dirty forever
+            // and could be committed by "git add THUB/".
+            deleteStaleTempFiles(thubDir);
+            Path tempFile = thubDir.resolve(tempFileName(tableName));
+            try {
+                objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), wrapper);
+                try {
+                    Files.move(tempFile, dataFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tempFile, dataFile, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(tempFile);
+            }
         } catch (IOException e) {
             throw new FlowStorageException("Failed to write THUB data file: " + tableName, e);
+        }
+    }
+
+    private static String tempFileName(String tableName) {
+        return "." + tableName + TEMP_SUFFIX;
+    }
+
+    /** Matches only the names this class writes, never a file the user put there. */
+    private static boolean isOwnTempFile(Path path) {
+        String name = path.getFileName().toString();
+        return name.startsWith(".") && name.endsWith(TEMP_SUFFIX);
+    }
+
+    /**
+     * Removes temp files left by an interrupted write. Safe to do unconditionally:
+     * writes to a workspace are serialized by the workspace lock, so no live write
+     * owns one of these when this runs.
+     */
+    private void deleteStaleTempFiles(Path thubDir) {
+        try (var entries = Files.list(thubDir)) {
+            for (Path entry : entries.filter(ThubDataServiceImpl::isOwnTempFile).toList()) {
+                Files.deleteIfExists(entry);
+                log.warn("Removed leftover THUB temp file: {}", entry.getFileName());
+            }
+        } catch (IOException e) {
+            log.warn("Failed to sweep THUB temp files in {}", thubDir, e);
         }
     }
 

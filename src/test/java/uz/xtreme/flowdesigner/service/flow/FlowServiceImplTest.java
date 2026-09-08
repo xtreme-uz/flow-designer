@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.flow;
 import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
+import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -26,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -52,6 +54,8 @@ class FlowServiceImplTest {
         workspacePath = tempDir.resolve("workspaces/user1-feature_test");
         Files.createDirectories(mainRepoPath);
         Files.createDirectories(workspacePath);
+        // A workspace is a clone; writes refuse to run in a directory that is not one
+        Files.createDirectories(workspacePath.resolve(".git"));
 
         gitProperties = new GitProperties(
                 "file://" + tempDir.resolve("remote.git"),
@@ -74,6 +78,16 @@ class FlowServiceImplTest {
                 Instant.now(),
                 Instant.now()
         );
+
+        // FlowService runs its multi-file writes through the workspace lock;
+        // the mock has to actually execute the action it is handed
+        lenient().doAnswer(invocation -> {
+            invocation.getArgument(1, Runnable.class).run();
+            return null;
+        }).when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Runnable.class));
+
+        lenient().doAnswer(invocation -> invocation.getArgument(1, Supplier.class).get())
+                .when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Supplier.class));
     }
 
     // ==================== Test Data Helpers ====================
@@ -128,6 +142,98 @@ class FlowServiceImplTest {
             transitions.put(ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()), t);
         }
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
+    }
+
+    // ==================== Flow Isolation Tests ====================
+
+    @Nested
+    @DisplayName("Flow Isolation Tests")
+    class FlowIsolationTests {
+
+        @Test
+        @DisplayName("Deleting a flow leaves a flow whose name extends it untouched")
+        void deleteDoesNotTouchSimilarlyNamedFlow() {
+            saveTestFlow(workspacePath, "payment");
+            saveTestFlow(workspacePath, "payment_reversal");
+
+            assertTrue(flowService.deleteFlow(workspace, "payment"));
+
+            Optional<ThubDeploymentData> survivor = flowService.getFlow(workspace, "payment_reversal");
+            assertTrue(survivor.isPresent());
+            assertEquals(2, survivor.get().flowStatusActions().size());
+            assertEquals(2, survivor.get().flowStatusTransitions().size());
+        }
+
+        @Test
+        @DisplayName("Saving a flow leaves a flow whose name extends it untouched")
+        void saveDoesNotTouchSimilarlyNamedFlow() {
+            saveTestFlow(workspacePath, "payment");
+            saveTestFlow(workspacePath, "payment_reversal");
+
+            flowService.saveFlow(workspace, "payment", createValidDeploymentData("payment"));
+
+            Optional<ThubDeploymentData> other = flowService.getFlow(workspace, "payment_reversal");
+            assertTrue(other.isPresent());
+            assertEquals(2, other.get().flowStatusActions().size());
+            assertEquals(2, other.get().flowStatusTransitions().size());
+        }
+
+        @Test
+        @DisplayName("Deleting a flow removes its assignments, whose keys carry no flow name")
+        void deleteRemovesAssignments() {
+            saveTestFlow(workspacePath, "payment");
+            Map<String, ThubFlowAssignment> assignments = new LinkedHashMap<>();
+            assignments.put(ThubDataService.flowAssignmentKey("card-processing"),
+                    new ThubFlowAssignment("card-processing", "src", "dst", "CARD", "payment"));
+            assignments.put(ThubDataService.flowAssignmentKey("other-flow-assignment"),
+                    new ThubFlowAssignment("other-flow-assignment", "src", "dst", "CARD", "transfer"));
+            thubDataService.writeFlowAssignments(workspacePath, assignments);
+
+            flowService.deleteFlow(workspace, "payment");
+
+            Map<String, ThubFlowAssignment> remaining = thubDataService.readFlowAssignments(workspacePath);
+            assertEquals(1, remaining.size());
+            assertTrue(remaining.containsKey(ThubDataService.flowAssignmentKey("other-flow-assignment")));
+        }
+
+        @Test
+        @DisplayName("Saving re-stamps records the client still labels with the old flow name")
+        void saveRestampsStaleFlowTypeId() {
+            ThubDeploymentData base = createValidDeploymentData("payment-v2");
+            // What a client holds right after a rename: records still carrying the old name
+            ThubDeploymentData stale = new ThubDeploymentData(
+                    base.flowType(),
+                    base.flowStatuses(),
+                    List.of(new ThubFlowStatusAction("payment-v1", "ACCEPTED",
+                            "source-payment-actor", "realize-debit", null, "30m", "10m")),
+                    List.of(new ThubFlowStatusTransition("payment-v1", "ACCEPTED", "FINISHED", "success", true)),
+                    List.of(new ThubFlowAssignment("card-processing", "src", "dst", "CARD", "payment-v1")));
+
+            flowService.saveFlow(workspace, "payment-v2", stale);
+
+            Optional<ThubDeploymentData> stored = flowService.getFlow(workspace, "payment-v2");
+            assertTrue(stored.isPresent(), "the flow reads back under the name it was saved as");
+            assertEquals(1, stored.get().flowStatusActions().size());
+            assertEquals(1, stored.get().flowStatusTransitions().size());
+            assertEquals(1, stored.get().flowAssignments().size());
+            assertEquals("payment-v2", stored.get().flowAssignments().get(0).flowTypeId());
+        }
+
+        @Test
+        @DisplayName("Saving keeps the assignments handed back by the client")
+        void saveKeepsAssignments() {
+            ThubDeploymentData base = createValidDeploymentData("payment");
+            ThubDeploymentData withAssignment = new ThubDeploymentData(
+                    base.flowType(), base.flowStatuses(), base.flowStatusActions(), base.flowStatusTransitions(),
+                    List.of(new ThubFlowAssignment("card-processing", "src", "dst", "CARD", "payment")));
+
+            flowService.saveFlow(workspace, "payment", withAssignment);
+
+            Optional<ThubDeploymentData> stored = flowService.getFlow(workspace, "payment");
+            assertTrue(stored.isPresent());
+            assertEquals(1, stored.get().flowAssignments().size());
+            assertEquals("card-processing", stored.get().flowAssignments().get(0).id());
+        }
     }
 
     // ==================== List Flows Tests ====================
@@ -286,6 +392,16 @@ class FlowServiceImplTest {
         }
 
         @Test
+        @DisplayName("Should refuse to write into a workspace that no longer exists")
+        void saveRefusesDeletedWorkspace() throws IOException {
+            // Idle cleanup can remove the clone between the request and the lock
+            Files.delete(workspacePath.resolve(".git"));
+
+            assertThrows(WorkspaceNotFoundException.class, () ->
+                    flowService.saveFlow(workspace, "payment", createValidDeploymentData("payment")));
+        }
+
+        @Test
         @DisplayName("Should throw validation error for invalid flow data")
         void saveFlowInvalidData() {
             ThubDeploymentData emptyData = new ThubDeploymentData(
@@ -301,7 +417,7 @@ class FlowServiceImplTest {
         @DisplayName("Should create THUB directory if not exists")
         void saveFlowCreatesDirectory() throws IOException {
             Path newWorkspacePath = tempDir.resolve("new-workspace");
-            Files.createDirectories(newWorkspacePath);
+            Files.createDirectories(newWorkspacePath.resolve(".git"));
             WorkspaceInfo newWorkspace = new WorkspaceInfo(
                     "new-workspace", "user2", "feature/new",
                     newWorkspacePath, Instant.now(), Instant.now()
@@ -474,6 +590,82 @@ class FlowServiceImplTest {
 
             List<String> errors = flowService.validateFlow(data);
             assertTrue(errors.stream().anyMatch(e -> e.contains("final status")));
+        }
+
+        @Test
+        @DisplayName("Should reject two transitions between the same pair of statuses")
+        void validateDuplicateTransition() {
+            ThubFlowType flowType = new ThubFlowType(
+                    "test", "ACCEPTED", "FINISHED", "Test",
+                    "1.0", "THUB", null, null, null, null, null
+            );
+            ThubDeploymentData data = new ThubDeploymentData(
+                    flowType,
+                    List.of(new ThubFlowStatus("ACCEPTED", "Start"), new ThubFlowStatus("FINISHED", "End")),
+                    List.of(),
+                    List.of(
+                            new ThubFlowStatusTransition("test", "ACCEPTED", "FINISHED", "success", true),
+                            new ThubFlowStatusTransition("test", "ACCEPTED", "FINISHED", "business-error", true)),
+                    List.of()
+            );
+
+            List<String> errors = flowService.validateFlow(data);
+            assertTrue(errors.stream().anyMatch(e -> e.contains("Duplicate transition")));
+        }
+
+        @Test
+        @DisplayName("Should accept a legacy status ID the app never created")
+        void validateAcceptsLegacyStatusId() {
+            ThubFlowType flowType = new ThubFlowType(
+                    "test", "2ND_LEG", "FINISHED", "Test",
+                    "1.0", "THUB", null, null, null, null, null
+            );
+            ThubDeploymentData data = new ThubDeploymentData(
+                    flowType,
+                    List.of(new ThubFlowStatus("2ND_LEG", "Second leg"),
+                            new ThubFlowStatus("FINISHED", "End")),
+                    List.of(), List.of(), List.of()
+            );
+
+            assertTrue(flowService.validateFlow(data).isEmpty());
+        }
+
+        @Test
+        @DisplayName("Should reject a node that was never given a status ID")
+        void validateMalformedStatusId() {
+            ThubFlowType flowType = new ThubFlowType(
+                    "test", "ACCEPTED", "FINISHED", "Test",
+                    "1.0", "THUB", null, null, null, null, null
+            );
+            ThubDeploymentData data = new ThubDeploymentData(
+                    flowType,
+                    List.of(new ThubFlowStatus("ACCEPTED", "Start"),
+                            new ThubFlowStatus("FINISHED", "End"),
+                            new ThubFlowStatus("node_0", "Dropped but never named")),
+                    List.of(), List.of(), List.of()
+            );
+
+            List<String> errors = flowService.validateFlow(data);
+            assertTrue(errors.stream().anyMatch(e -> e.contains("has no status ID")));
+        }
+
+        @Test
+        @DisplayName("Should reject duplicate status IDs")
+        void validateDuplicateStatusId() {
+            ThubFlowType flowType = new ThubFlowType(
+                    "test", "ACCEPTED", "FINISHED", "Test",
+                    "1.0", "THUB", null, null, null, null, null
+            );
+            ThubDeploymentData data = new ThubDeploymentData(
+                    flowType,
+                    List.of(new ThubFlowStatus("ACCEPTED", "Start"),
+                            new ThubFlowStatus("ACCEPTED", "Start again"),
+                            new ThubFlowStatus("FINISHED", "End")),
+                    List.of(), List.of(), List.of()
+            );
+
+            List<String> errors = flowService.validateFlow(data);
+            assertTrue(errors.stream().anyMatch(e -> e.contains("Duplicate status ID")));
         }
 
         @Test

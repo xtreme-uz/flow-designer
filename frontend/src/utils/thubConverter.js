@@ -83,9 +83,12 @@ export function thubToReactFlow(deploymentData) {
  * @param {Array} edges - React Flow edges
  * @param {string} flowTypeId - Flow type identifier
  * @param {Object|null} existingFlowType - Existing flowType record to preserve audit info
+ * @param {Array} existingAssignments - FlowAssignment records of the loaded flow.
+ *   The canvas cannot express assignments, so they are carried through unchanged;
+ *   dropping them here would delete them from the THUB data on the next save.
  * @returns {Object} ThubDeploymentData
  */
-export function reactFlowToThub(nodes, edges, flowTypeId, existingFlowType = null) {
+export function reactFlowToThub(nodes, edges, flowTypeId, existingFlowType = null, existingAssignments = []) {
   // Determine initial and final status
   const initialNode = nodes.find((n) => n.type === 'initialNode' || n.data?.isInitial);
   const finalNode = nodes.find((n) => n.type === 'finalNode' || n.data?.isFinal);
@@ -133,7 +136,10 @@ export function reactFlowToThub(nodes, edges, flowTypeId, existingFlowType = nul
     nodeIdToStatusId[node.id] = node.data?.statusId || node.id;
   }
 
-  // Build flow status transitions
+  // Build flow status transitions.
+  // THUB keys a transition by (flowType, status, nextStatus), so two edges
+  // between the same pair collapse into one record — the UI prevents drawing
+  // them and the backend rejects them, this is the last line of defence.
   const flowStatusTransitions = edges.map((edge) => ({
     flowtypeid: flowTypeId,
     flowstatusid: nodeIdToStatusId[edge.source] || edge.source,
@@ -147,6 +153,6 @@ export function reactFlowToThub(nodes, edges, flowTypeId, existingFlowType = nul
     flowStatuses,
     flowStatusActions,
     flowStatusTransitions,
-    flowAssignments: existingFlowType?._flowAssignments ?? [],
+    flowAssignments: existingAssignments ?? [],
   };
 }

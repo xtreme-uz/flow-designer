@@ -3,6 +3,7 @@ package uz.xtreme.flowdesigner.service.flow;
 import uz.xtreme.flowdesigner.config.GitProperties;
 import uz.xtreme.flowdesigner.exception.FlowNotFoundException;
 import uz.xtreme.flowdesigner.exception.FlowValidationException;
+import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import uz.xtreme.flowdesigner.service.flow.dto.FlowSummary;
 import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.GitService;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
@@ -25,6 +27,13 @@ public class FlowServiceImpl implements FlowService {
     private static final Logger log = LoggerFactory.getLogger(FlowServiceImpl.class);
 
     private static final Pattern FLOW_NAME_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
+    /**
+     * The canvas's own node ids, which must never reach the FlowStatus file that
+     * every flow shares. Status ids are otherwise not policed: they come from data
+     * that predates Flow Designer, and rejecting one would make a flow the app
+     * never created permanently unsavable.
+     */
+    private static final Pattern CANVAS_NODE_ID_PATTERN = Pattern.compile("^node_\\d+$");
     private static final int MAX_FLOW_NAME_LENGTH = 100;
 
     private final GitProperties gitProperties;
@@ -87,6 +96,14 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public void saveFlow(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
+        // Five files are read and rewritten here; without the workspace lock a
+        // concurrent save on the same workspace interleaves and loses records
+        gitService.withWorkspaceLock(workspace, () -> saveFlowLocked(workspace, flowTypeId, deploymentData));
+    }
+
+    private void saveFlowLocked(WorkspaceInfo workspace, String flowTypeId, ThubDeploymentData deploymentData) {
+        requireWorkspaceOnDisk(workspace);
+
         List<String> nameErrors = validateFlowName(flowTypeId);
         if (!nameErrors.isEmpty()) {
             throw new FlowValidationException(nameErrors);
@@ -111,31 +128,36 @@ public class FlowServiceImpl implements FlowService {
         }
         thubDataService.writeFlowStatuses(basePath, statuses);
 
-        // Replace FlowStatusActions for this flowTypeId
+        // Replace FlowStatusActions for this flowTypeId. Every record is stamped
+        // with the flow being saved: the client may still be holding the name from
+        // before a rename, and since removal now matches on this field, a stale one
+        // would detach the record from its flow.
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId,
+                a -> ThubDataService.flowStatusActionKey(flowTypeId, a.flowStatusId()));
         for (ThubFlowStatusAction action : deploymentData.flowStatusActions()) {
             String key = ThubDataService.flowStatusActionKey(flowTypeId, action.flowStatusId());
-            actions.put(key, action);
+            actions.put(key, withFlowTypeId(action, flowTypeId));
         }
         thubDataService.writeFlowStatusActions(basePath, actions);
 
         // Replace FlowStatusTransitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId,
+                t -> ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()));
         for (ThubFlowStatusTransition transition : deploymentData.flowStatusTransitions()) {
             String key = ThubDataService.flowStatusTransitionKey(
                     flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId());
-            transitions.put(key, transition);
+            transitions.put(key, withFlowTypeId(transition, flowTypeId));
         }
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
 
         // Replace FlowAssignments for this flowTypeId
         Map<String, ThubFlowAssignment> assignments = thubDataService.readFlowAssignments(basePath);
-        removeByFlowTypeId(assignments, flowTypeId);
+        removeByFlowTypeId(assignments, flowTypeId, ThubFlowAssignment::flowTypeId);
         for (ThubFlowAssignment assignment : deploymentData.flowAssignments()) {
             String key = ThubDataService.flowAssignmentKey(assignment.id());
-            assignments.put(key, assignment);
+            assignments.put(key, withFlowTypeId(assignment, flowTypeId));
         }
         thubDataService.writeFlowAssignments(basePath, assignments);
 
@@ -144,6 +166,11 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public boolean deleteFlow(WorkspaceInfo workspace, String flowTypeId) {
+        return gitService.withWorkspaceLock(workspace, () -> deleteFlowLocked(workspace, flowTypeId));
+    }
+
+    private boolean deleteFlowLocked(WorkspaceInfo workspace, String flowTypeId) {
+        requireWorkspaceOnDisk(workspace);
         Path basePath = workspace.path();
         String flowTypeKey = ThubDataService.flowTypeKey(flowTypeId);
 
@@ -158,17 +185,19 @@ public class FlowServiceImpl implements FlowService {
 
         // Remove Actions for this flowTypeId
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId,
+                a -> ThubDataService.flowStatusActionKey(flowTypeId, a.flowStatusId()));
         thubDataService.writeFlowStatusActions(basePath, actions);
 
         // Remove Transitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId,
+                t -> ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()));
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
 
         // Remove Assignments for this flowTypeId
         Map<String, ThubFlowAssignment> assignments = thubDataService.readFlowAssignments(basePath);
-        removeByFlowTypeId(assignments, flowTypeId);
+        removeByFlowTypeId(assignments, flowTypeId, ThubFlowAssignment::flowTypeId);
         thubDataService.writeFlowAssignments(basePath, assignments);
 
         // Note: FlowStatuses are SHARED and NOT removed (they may be used by other flows)
@@ -179,6 +208,11 @@ public class FlowServiceImpl implements FlowService {
 
     @Override
     public void renameFlow(WorkspaceInfo workspace, String oldFlowTypeId, String newFlowTypeId) {
+        // Delete + re-create must be atomic against other writers on this workspace
+        gitService.withWorkspaceLock(workspace, () -> renameFlowLocked(workspace, oldFlowTypeId, newFlowTypeId));
+    }
+
+    private void renameFlowLocked(WorkspaceInfo workspace, String oldFlowTypeId, String newFlowTypeId) {
         List<String> nameErrors = validateFlowName(newFlowTypeId);
         if (!nameErrors.isEmpty()) {
             throw new FlowValidationException(nameErrors);
@@ -288,8 +322,12 @@ public class FlowServiceImpl implements FlowService {
         for (ThubFlowStatus status : data.flowStatuses()) {
             if (status.id() == null || status.id().isBlank()) {
                 errors.add("Status ID cannot be null or empty");
-            } else {
-                statusIds.add(status.id());
+            } else if (CANVAS_NODE_ID_PATTERN.matcher(status.id()).matches()) {
+                // FlowStatus records are shared by every flow, so an unnamed node
+                // would put its internal canvas id in front of everyone else
+                errors.add("A node has no status ID — open it and give it one");
+            } else if (!statusIds.add(status.id())) {
+                errors.add("Duplicate status ID: " + status.id());
             }
         }
 
@@ -301,12 +339,21 @@ public class FlowServiceImpl implements FlowService {
         }
 
         // Validate transitions reference existing statuses
+        Set<String> transitionPairs = new HashSet<>();
         for (ThubFlowStatusTransition transition : data.flowStatusTransitions()) {
             if (transition.flowStatusId() != null && !statusIds.contains(transition.flowStatusId())) {
                 errors.add("Transition references non-existent status: " + transition.flowStatusId());
             }
             if (transition.nextFlowStatusId() != null && !statusIds.contains(transition.nextFlowStatusId())) {
                 errors.add("Transition references non-existent next status: " + transition.nextFlowStatusId());
+            }
+            // A THUB transition is keyed by (flowType, status, nextStatus): a second
+            // transition between the same pair would overwrite the first on write,
+            // silently dropping one of the result types
+            if (transition.flowStatusId() != null && transition.nextFlowStatusId() != null
+                    && !transitionPairs.add(transition.flowStatusId() + " -> " + transition.nextFlowStatusId())) {
+                errors.add("Duplicate transition '" + transition.flowStatusId() + " -> "
+                        + transition.nextFlowStatusId() + "' — list every result type on a single transition");
             }
         }
 
@@ -341,6 +388,18 @@ public class FlowServiceImpl implements FlowService {
     }
 
     // ==================== Private Helper Methods ====================
+
+    /**
+     * Fails a write whose workspace is no longer a git clone. Idle cleanup may
+     * have removed it between the request arriving and the lock being taken;
+     * writing anyway would recreate a bare THUB/ directory outside any
+     * repository and report success while the data is unreachable.
+     */
+    private void requireWorkspaceOnDisk(WorkspaceInfo workspace) {
+        if (!java.nio.file.Files.isDirectory(workspace.path().resolve(".git"))) {
+            throw new WorkspaceNotFoundException(workspace.id());
+        }
+    }
 
     private List<FlowSummary> listFlowsFromPath(Path basePath) {
         Map<String, ThubFlowType> flowTypes = thubDataService.readFlowTypes(basePath);
@@ -397,13 +456,63 @@ public class FlowServiceImpl implements FlowService {
     }
 
     /**
-     * Removes all entries from the map whose R_ key starts with the flowTypeId prefix.
-     * Works for Actions (R_{flowTypeId}_{statusId}),
-     * Transitions (R_{flowTypeId}_{statusId}_{nextStatusId}),
-     * and Assignments (checked by flowTypeId field).
+     * Removes every record owned by the given flow, matching on the record's own
+     * {@code flowtypeid} field.
+     *
+     * <p>Matching on the R_ key prefix instead would delete records of a different
+     * flow whose name happens to extend this one: flow names may contain '_', so
+     * the key {@code R_payment_reversal_ACCEPTED} (flow "payment_reversal") starts
+     * with the prefix {@code R_payment_} of the flow "payment". The field is
+     * unambiguous, and it also covers FlowAssignment, whose key
+     * ({@code R_{assignmentId}}) carries no flow name at all.
      */
-    private void removeByFlowTypeId(Map<String, ?> map, String flowTypeId) {
-        String prefix = "R_" + flowTypeId + "_";
-        map.keySet().removeIf(key -> key.startsWith(prefix) || key.equals("R_" + flowTypeId));
+    private static ThubFlowStatusAction withFlowTypeId(ThubFlowStatusAction action, String flowTypeId) {
+        if (flowTypeId.equals(action.flowTypeId())) {
+            return action;
+        }
+        return new ThubFlowStatusAction(
+                flowTypeId, action.flowStatusId(), action.actionModuleId(), action.actionId(),
+                action.maxActionTriesCount(), action.maxActionTryingTime(), action.warningActionTryingTime());
+    }
+
+    private static ThubFlowStatusTransition withFlowTypeId(ThubFlowStatusTransition transition, String flowTypeId) {
+        if (flowTypeId.equals(transition.flowTypeId())) {
+            return transition;
+        }
+        return new ThubFlowStatusTransition(
+                flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId(),
+                transition.actionResultTypeIds(), transition.storeActionResultAsRequestResult());
+    }
+
+    private static ThubFlowAssignment withFlowTypeId(ThubFlowAssignment assignment, String flowTypeId) {
+        if (flowTypeId.equals(assignment.flowTypeId())) {
+            return assignment;
+        }
+        return new ThubFlowAssignment(
+                assignment.id(), assignment.sourcePaymentActorId(), assignment.targetPaymentActorId(),
+                assignment.paymentType(), flowTypeId);
+    }
+
+    private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
+                                               Function<T, String> flowTypeIdExtractor) {
+        removeByFlowTypeId(map, flowTypeId, flowTypeIdExtractor, null);
+    }
+
+    /**
+     * @param keyBuilder key this flow would store the record under, used to claim
+     *                   records written before the flowtypeid field was filled in;
+     *                   without it such a record can never be replaced or deleted
+     *                   and lingers in the shared file forever
+     */
+    private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
+                                               Function<T, String> flowTypeIdExtractor,
+                                               Function<T, String> keyBuilder) {
+        map.entrySet().removeIf(entry -> {
+            String recordFlowTypeId = flowTypeIdExtractor.apply(entry.getValue());
+            if (recordFlowTypeId != null) {
+                return flowTypeId.equals(recordFlowTypeId);
+            }
+            return keyBuilder != null && entry.getKey().equals(keyBuilder.apply(entry.getValue()));
+        });
     }
 }

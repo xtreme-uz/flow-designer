@@ -10,11 +10,13 @@ import uz.xtreme.flowdesigner.service.flow.dto.thub.*;
 import uz.xtreme.flowdesigner.service.git.AuditInfo;
 import uz.xtreme.flowdesigner.service.git.GitService;
 import uz.xtreme.flowdesigner.service.git.WorkspaceInfo;
+import uz.xtreme.flowdesigner.service.git.WorkspaceStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -25,6 +27,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -59,6 +62,10 @@ class FlowControllerTest {
                 Instant.now(),
                 Instant.now()
         );
+
+        // Stage+commit runs inside the workspace lock; the mock must execute it
+        lenient().doAnswer(invocation -> invocation.getArgument(1, Supplier.class).get())
+                .when(gitService).withWorkspaceLock(any(WorkspaceInfo.class), any(Supplier.class));
     }
 
     // ==================== Test Data Helpers ====================
@@ -142,7 +149,7 @@ class FlowControllerTest {
         void createWorkspace() {
             when(gitService.getOrCreateWorkspace(USER_ID, BRANCH)).thenReturn(workspace);
 
-            ResponseEntity<WorkspaceInfo> response = controller.getOrCreateWorkspace(
+            ResponseEntity<FlowController.WorkspaceResponse> response = controller.getOrCreateWorkspace(
                     USER_ID,
                     new FlowController.CreateWorkspaceRequest(BRANCH)
             );
@@ -170,7 +177,7 @@ class FlowControllerTest {
             );
             when(gitService.getAllWorkspaces()).thenReturn(List.of(workspace, other));
 
-            List<WorkspaceInfo> result = controller.listWorkspaces(USER_ID);
+            List<FlowController.WorkspaceResponse> result = controller.listWorkspaces(USER_ID);
 
             assertEquals(1, result.size());
             assertEquals(USER_ID, result.getFirst().userId());
@@ -181,10 +188,20 @@ class FlowControllerTest {
         void getCurrentWorkspace() {
             when(gitService.getWorkspace(USER_ID, BRANCH)).thenReturn(Optional.of(workspace));
 
-            WorkspaceInfo result = controller.getCurrentWorkspace(USER_ID, BRANCH);
+            FlowController.WorkspaceResponse result = controller.getCurrentWorkspace(USER_ID, BRANCH);
 
             assertNotNull(result);
             assertEquals(workspace.id(), result.id());
+        }
+
+        @Test
+        @DisplayName("GET /api/workspaces/current - does not expose the server path")
+        void workspaceResponseHidesServerPath() {
+            when(gitService.getWorkspace(USER_ID, BRANCH)).thenReturn(Optional.of(workspace));
+
+            FlowController.WorkspaceResponse result = controller.getCurrentWorkspace(USER_ID, BRANCH);
+
+            assertFalse(result.toString().contains("/tmp/workspaces"));
         }
 
         @Test
@@ -265,7 +282,93 @@ class FlowControllerTest {
             assertEquals(HttpStatus.CREATED, response.getStatusCode());
             assertNotNull(response.getBody());
             assertEquals(FLOW_NAME, response.getBody().flowTypeId());
-            verify(flowService).saveFlow(workspace, FLOW_NAME, deploymentData);
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            assertEquals(deploymentData.flowStatuses(), saved.getValue().flowStatuses());
+            assertEquals(deploymentData.flowStatusTransitions(), saved.getValue().flowStatusTransitions());
+        }
+
+        @Test
+        @DisplayName("POST /api/workspaces/flows - stamps audit fields from the authenticated user")
+        void createFlowStampsAudit() {
+            ThubDeploymentData spoofed = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "someone-else", Instant.parse("2000-01-01T00:00:00Z"),
+                            "someone-else", Instant.parse("2000-01-01T00:00:00Z"),
+                            Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
+
+            controller.createFlow(USER_ID, BRANCH,
+                    new FlowController.CreateFlowRequest(FLOW_NAME, spoofed));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            ThubFlowType stored = saved.getValue().flowType();
+            assertEquals(USER_ID, stored.createdBy());
+            assertEquals(USER_ID, stored.lastModifiedBy());
+            assertTrue(stored.createdAt().isAfter(Instant.parse("2020-01-01T00:00:00Z")));
+        }
+
+        @Test
+        @DisplayName("PUT /api/workspaces/flows/{name} - keeps the stored creation audit")
+        void updateFlowKeepsCreationAudit() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData stored = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "original-author", createdAt, "original-author", createdAt, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            // What the canvas sends back: no audit fields at all
+            ThubDeploymentData incoming = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            null, null, null, null, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
+
+            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
+                    new FlowController.UpdateFlowRequest(incoming));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            ThubFlowType result = saved.getValue().flowType();
+            assertEquals("original-author", result.createdBy());
+            assertEquals(createdAt, result.createdAt());
+            assertEquals(USER_ID, result.lastModifiedBy());
+        }
+
+        @Test
+        @DisplayName("PUT /api/workspaces/flows/{name} - refuses a forged author")
+        void updateFlowIgnoresForgedAuthor() {
+            Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+            ThubDeploymentData stored = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "original-author", createdAt, "original-author", createdAt, Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            ThubDeploymentData forged = new ThubDeploymentData(
+                    new ThubFlowType(
+                            FLOW_NAME, "ACCEPTED", "FINISHED", "Test flow", "1.0", "THUB",
+                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"),
+                            "someone-else", Instant.parse("1999-01-01T00:00:00Z"), Map.of()),
+                    List.of(new ThubFlowStatus("ACCEPTED", "Payment accepted")),
+                    List.of(), List.of(), List.of());
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(stored));
+
+            controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
+                    new FlowController.UpdateFlowRequest(forged));
+
+            ArgumentCaptor<ThubDeploymentData> saved = ArgumentCaptor.forClass(ThubDeploymentData.class);
+            verify(flowService).saveFlow(eq(workspace), eq(FLOW_NAME), saved.capture());
+            assertEquals("original-author", saved.getValue().flowType().createdBy());
+            assertEquals(createdAt, saved.getValue().flowType().createdAt());
         }
 
         @Test
@@ -282,7 +385,7 @@ class FlowControllerTest {
         @DisplayName("PUT /api/workspaces/flows/{name} - update flow with ThubDeploymentData")
         void updateFlow() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
 
             FlowSummary result = controller.updateFlow(
                     USER_ID, BRANCH, FLOW_NAME,
@@ -299,7 +402,7 @@ class FlowControllerTest {
         @DisplayName("PUT /api/workspaces/flows/{name} - sets lastModifiedBy from header")
         void updateFlowSetsLastModifiedBy() {
             ThubDeploymentData deploymentData = createValidDeploymentData(FLOW_NAME);
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(true);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.of(deploymentData));
 
             controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
                     new FlowController.UpdateFlowRequest(deploymentData));
@@ -312,7 +415,7 @@ class FlowControllerTest {
         @Test
         @DisplayName("PUT /api/workspaces/flows/{name} - throws when not found")
         void updateFlowNotFound() {
-            when(flowService.flowExists(workspace, FLOW_NAME)).thenReturn(false);
+            when(flowService.getFlow(workspace, FLOW_NAME)).thenReturn(Optional.empty());
 
             assertThrows(FlowNotFoundException.class, () ->
                     controller.updateFlow(USER_ID, BRANCH, FLOW_NAME,
@@ -425,7 +528,7 @@ class FlowControllerTest {
 
             FlowController.CommitResponse result = controller.commitChanges(
                     USER_ID, "Test User", "test@example.com", BRANCH,
-                    new FlowController.CommitRequest(message)
+                    new FlowController.CommitRequest(message, null)
             );
 
             assertEquals(commitHash, result.commitHash());
@@ -455,14 +558,30 @@ class FlowControllerTest {
         @Test
         @DisplayName("GET /api/workspaces/status - get workspace status")
         void getWorkspaceStatus() {
-            String headCommit = "abc123";
-            when(gitService.getHeadCommit(workspace)).thenReturn(headCommit);
+            when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
+                    "abc123", BRANCH, List.of("THUB/FlowType-data.json"), 2, 0, true));
 
-            Map<String, Object> result = controller.getWorkspaceStatus(USER_ID, BRANCH);
+            FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
 
-            assertEquals(workspace.id(), result.get("workspaceId"));
-            assertEquals(workspace.branchName(), result.get("branch"));
-            assertEquals(headCommit, result.get("currentVersion"));
+            assertEquals(workspace.id(), result.workspaceId());
+            assertEquals(workspace.branchName(), result.branch());
+            assertEquals("abc123", result.currentVersion());
+            assertEquals(List.of("THUB/FlowType-data.json"), result.changedFiles());
+            assertFalse(result.clean());
+            assertEquals(2, result.aheadCount());
+            assertTrue(result.hasUpstream());
+        }
+
+        @Test
+        @DisplayName("GET /api/workspaces/status - reports a clean workspace")
+        void getWorkspaceStatusClean() {
+            when(gitService.getStatus(workspace)).thenReturn(new WorkspaceStatus(
+                    "abc123", BRANCH, List.of(), 0, 0, true));
+
+            FlowController.WorkspaceStatusResponse result = controller.getWorkspaceStatus(USER_ID, BRANCH);
+
+            assertTrue(result.clean());
+            assertTrue(result.changedFiles().isEmpty());
         }
 
         @Test
@@ -477,14 +596,14 @@ class FlowControllerTest {
             );
             when(gitService.getOrCreateWorkspace(USER_ID, newBranch)).thenReturn(newWorkspace);
 
-            ResponseEntity<WorkspaceInfo> response = controller.createBranch(
+            ResponseEntity<FlowController.WorkspaceResponse> response = controller.createBranch(
                     USER_ID, BRANCH,
                     new FlowController.CreateBranchRequest(newBranch)
             );
 
             assertEquals(HttpStatus.CREATED, response.getStatusCode());
             assertEquals(newBranch, response.getBody().branchName());
-            verify(gitService).createBranch(workspace, newBranch);
+            verify(gitService).createAndPushBranch(workspace, newBranch);
             verify(gitService).getOrCreateWorkspace(USER_ID, newBranch);
         }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWorkspace } from '../contexts/WorkspaceContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -21,7 +21,7 @@ export default function Header({
   onEditMetadata,
   hasUnsavedChanges
 }) {
-  const { userId, branch, defaultBranch, workspaceStatus, isMainBranch, initWorkspace } = useWorkspace();
+  const { branch, defaultBranch, workspaceStatus, isMainBranch, initWorkspace } = useWorkspace();
   const { user, logout } = useAuth();
   const toast = useToast();
   const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
@@ -63,6 +63,11 @@ export default function Header({
   const handleBranchSwitch = async (e) => {
     e.preventDefault();
     if (switchingBranch) return;
+    // Switching clears the canvas: the loaded flow belongs to the old branch
+    if (hasUnsavedChanges &&
+        !window.confirm('You have unsaved changes. Switch branch anyway?')) {
+      return;
+    }
     setSwitchingBranch(true);
     try {
       await initWorkspace(newBranch);
@@ -256,9 +261,10 @@ export default function Header({
       {showFlowListModal && (
         <FlowListModal
           onClose={() => setShowFlowListModal(false)}
-          onLoadFlow={(flowName) => {
-            onLoadFlow(flowName);
-            setShowFlowListModal(false);
+          onLoadFlow={async (flowName) => {
+            if (await onLoadFlow(flowName)) {
+              setShowFlowListModal(false);
+            }
           }}
         />
       )}
@@ -294,17 +300,16 @@ export default function Header({
  * Modal for listing and loading flows
  */
 function FlowListModal({ onClose, onLoadFlow }) {
-  const { userId, branch, isMainBranch } = useWorkspace();
+  const { branch, isMainBranch } = useWorkspace();
   const [flows, setFlows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [viewSource, setViewSource] = useState(isMainBranch ? 'main' : 'workspace');
 
-  const loadFlows = async () => {
+  const loadFlows = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const api = await import('../services/api');
       const flowList = viewSource === 'main'
         ? await api.listFlowsFromMain()
         : await api.listWorkspaceFlows(branch);
@@ -314,11 +319,11 @@ function FlowListModal({ onClose, onLoadFlow }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [viewSource, branch]);
 
   useEffect(() => {
     loadFlows();
-  }, [viewSource, userId, branch]);
+  }, [loadFlows]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
