@@ -26,7 +26,14 @@ public class FlowServiceImpl implements FlowService {
     private static final Logger log = LoggerFactory.getLogger(FlowServiceImpl.class);
 
     private static final Pattern FLOW_NAME_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
-    private static final Pattern STATUS_ID_PATTERN = Pattern.compile("^[a-zA-Z][a-zA-Z0-9_-]*$");
+    /**
+     * Deliberately permissive: these ids come from the shared FlowStatus file that
+     * predates Flow Designer, so anything a THUB status is actually called has to
+     * pass. It only rules out ids that could not be meant seriously — whitespace,
+     * separators, and the canvas's own placeholder node ids.
+     */
+    private static final Pattern STATUS_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.\\-]*$");
+    private static final Pattern CANVAS_NODE_ID_PATTERN = Pattern.compile("^node_\\d+$");
     private static final int MAX_FLOW_NAME_LENGTH = 100;
 
     private final GitProperties gitProperties;
@@ -124,7 +131,8 @@ public class FlowServiceImpl implements FlowService {
         // before a rename, and since removal now matches on this field, a stale one
         // would detach the record from its flow.
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId,
+                a -> ThubDataService.flowStatusActionKey(flowTypeId, a.flowStatusId()));
         for (ThubFlowStatusAction action : deploymentData.flowStatusActions()) {
             String key = ThubDataService.flowStatusActionKey(flowTypeId, action.flowStatusId());
             actions.put(key, withFlowTypeId(action, flowTypeId));
@@ -133,7 +141,8 @@ public class FlowServiceImpl implements FlowService {
 
         // Replace FlowStatusTransitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId,
+                t -> ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()));
         for (ThubFlowStatusTransition transition : deploymentData.flowStatusTransitions()) {
             String key = ThubDataService.flowStatusTransitionKey(
                     flowTypeId, transition.flowStatusId(), transition.nextFlowStatusId());
@@ -173,12 +182,14 @@ public class FlowServiceImpl implements FlowService {
 
         // Remove Actions for this flowTypeId
         Map<String, ThubFlowStatusAction> actions = thubDataService.readFlowStatusActions(basePath);
-        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId);
+        removeByFlowTypeId(actions, flowTypeId, ThubFlowStatusAction::flowTypeId,
+                a -> ThubDataService.flowStatusActionKey(flowTypeId, a.flowStatusId()));
         thubDataService.writeFlowStatusActions(basePath, actions);
 
         // Remove Transitions for this flowTypeId
         Map<String, ThubFlowStatusTransition> transitions = thubDataService.readFlowStatusTransitions(basePath);
-        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId);
+        removeByFlowTypeId(transitions, flowTypeId, ThubFlowStatusTransition::flowTypeId,
+                t -> ThubDataService.flowStatusTransitionKey(flowTypeId, t.flowStatusId(), t.nextFlowStatusId()));
         thubDataService.writeFlowStatusTransitions(basePath, transitions);
 
         // Remove Assignments for this flowTypeId
@@ -308,11 +319,13 @@ public class FlowServiceImpl implements FlowService {
         for (ThubFlowStatus status : data.flowStatuses()) {
             if (status.id() == null || status.id().isBlank()) {
                 errors.add("Status ID cannot be null or empty");
+            } else if (CANVAS_NODE_ID_PATTERN.matcher(status.id()).matches()) {
+                // FlowStatus records are shared by every flow, so an unnamed node
+                // would put its internal canvas id in front of everyone else
+                errors.add("Status '" + status.id() + "' has no status ID — open the node and give it one");
             } else if (!STATUS_ID_PATTERN.matcher(status.id()).matches()) {
-                // FlowStatus records are shared by every flow, so a placeholder id
-                // from an unfinished node would pollute the whole repository
-                errors.add("Status ID '" + status.id() + "' must start with a letter and contain only "
-                        + "letters, numbers, underscores and hyphens");
+                errors.add("Status ID '" + status.id() + "' may contain only letters, numbers, "
+                        + "underscores, dots and hyphens");
             } else if (!statusIds.add(status.id())) {
                 errors.add("Duplicate status ID: " + status.id());
             }
@@ -470,6 +483,24 @@ public class FlowServiceImpl implements FlowService {
 
     private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
                                                Function<T, String> flowTypeIdExtractor) {
-        map.values().removeIf(record -> flowTypeId.equals(flowTypeIdExtractor.apply(record)));
+        removeByFlowTypeId(map, flowTypeId, flowTypeIdExtractor, null);
+    }
+
+    /**
+     * @param keyBuilder key this flow would store the record under, used to claim
+     *                   records written before the flowtypeid field was filled in;
+     *                   without it such a record can never be replaced or deleted
+     *                   and lingers in the shared file forever
+     */
+    private static <T> void removeByFlowTypeId(Map<String, T> map, String flowTypeId,
+                                               Function<T, String> flowTypeIdExtractor,
+                                               Function<T, String> keyBuilder) {
+        map.entrySet().removeIf(entry -> {
+            String recordFlowTypeId = flowTypeIdExtractor.apply(entry.getValue());
+            if (recordFlowTypeId != null) {
+                return flowTypeId.equals(recordFlowTypeId);
+            }
+            return keyBuilder != null && entry.getKey().equals(keyBuilder.apply(entry.getValue()));
+        });
     }
 }

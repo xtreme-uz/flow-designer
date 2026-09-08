@@ -371,11 +371,7 @@ public class FlowController {
         }
 
         WorkspaceInfo currentWorkspace = getWorkspaceOrThrow(userId, currentBranch);
-        gitService.createBranch(currentWorkspace, request.newBranchName());
-        // createBranch switches the source clone onto the new branch. Put it back:
-        // the workspace registry says this clone is on currentBranch, and workspace
-        // identity is recovered from the checked-out branch after a restart.
-        gitService.checkout(currentWorkspace, currentBranch);
+        gitService.createAndPushBranch(currentWorkspace, request.newBranchName());
         WorkspaceInfo newWorkspace = gitService.getOrCreateWorkspace(userId, request.newBranchName());
 
         return ResponseEntity.status(HttpStatus.CREATED).body(WorkspaceResponse.from(newWorkspace));

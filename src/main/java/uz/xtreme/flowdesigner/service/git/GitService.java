@@ -55,6 +55,17 @@ public interface GitService {
     void createBranch(WorkspaceInfo workspace, String branchName);
 
     /**
+     * Creates a branch at the workspace's current HEAD and publishes it, without
+     * moving this workspace off its own branch. Publishing matters: a workspace
+     * for the new branch is a fresh clone, so an unpublished branch would start
+     * from the default branch instead of the work it was branched from.
+     *
+     * @param workspace  the workspace to branch from
+     * @param branchName the new branch name
+     */
+    void createAndPushBranch(WorkspaceInfo workspace, String branchName);
+
+    /**
      * Switches to a different branch in the workspace.
      *
      * @param workspace  the workspace

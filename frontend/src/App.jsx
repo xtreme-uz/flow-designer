@@ -333,6 +333,17 @@ export default function App() {
       return;
     }
 
+    // The canvas id would otherwise travel to the shared status file as the
+    // status id, where every other flow would see it
+    const unnamed = nodes.filter((n) => !n.data?.statusId);
+    if (unnamed.length > 0) {
+      toast.error(
+        `${unnamed.length} node${unnamed.length === 1 ? ' has' : 's have'} no status ID. ` +
+        'Open each one and set it before saving.'
+      );
+      return;
+    }
+
     setLoading(true);
     try {
       // Convert React Flow nodes/edges back to THUB deployment data

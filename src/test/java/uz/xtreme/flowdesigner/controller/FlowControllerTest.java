@@ -603,7 +603,7 @@ class FlowControllerTest {
 
             assertEquals(HttpStatus.CREATED, response.getStatusCode());
             assertEquals(newBranch, response.getBody().branchName());
-            verify(gitService).createBranch(workspace, newBranch);
+            verify(gitService).createAndPushBranch(workspace, newBranch);
             verify(gitService).getOrCreateWorkspace(USER_ID, newBranch);
         }
 

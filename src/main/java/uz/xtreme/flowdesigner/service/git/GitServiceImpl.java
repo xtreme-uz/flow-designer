@@ -26,6 +26,7 @@ import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.PushResult;
+import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteRefUpdate;
 import org.eclipse.jgit.transport.SshSessionFactory;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
@@ -464,7 +465,8 @@ public class GitServiceImpl implements GitService {
                 // Merging into a dirty tree is what makes a pull dangerous: git
                 // refuses it, and any recovery from a half-done merge risks the
                 // files the user just saved. Ask for a commit instead.
-                if (!git.status().call().isClean()) {
+                // Same scope as commit and status: only THUB/ is the app's data
+                if (!git.status().addPath(THUB_DIR).call().isClean()) {
                     throw new GitSyncConflictException("pull",
                             "The workspace has uncommitted changes — commit them before pulling.");
                 }
@@ -503,6 +505,31 @@ public class GitServiceImpl implements GitService {
                 git.checkout()
                         .setName(branchName)
                         .call();
+                updateLastAccessed(workspace);
+            } catch (GitAPIException e) {
+                throw new GitOperationException("Failed to create branch: " + branchName, e);
+            }
+        });
+    }
+
+    @Override
+    public void createAndPushBranch(WorkspaceInfo workspace, String branchName) {
+        withLock(workspace, () -> {
+            Git git = getGitInstance(workspace);
+            try {
+                // Create the ref without checking out: this workspace stays on its
+                // own branch, and pushing makes the new branch real so a workspace
+                // for it clones the current branch's work rather than the default
+                // branch's
+                git.branchCreate().setName(branchName).call();
+
+                var pushCommand = git.push()
+                        .setRefSpecs(new RefSpec(Constants.R_HEADS + branchName
+                                + ":" + Constants.R_HEADS + branchName));
+                if (credentialsProvider != null) {
+                    pushCommand.setCredentialsProvider(credentialsProvider);
+                }
+                verifyPushResults(pushCommand.call(), workspace);
                 updateLastAccessed(workspace);
             } catch (GitAPIException e) {
                 throw new GitOperationException("Failed to create branch: " + branchName, e);
@@ -703,7 +730,8 @@ public class GitServiceImpl implements GitService {
 
         log.warn("Pull failed for workspace {}: {}", workspace.id(), detail);
         throw new GitSyncConflictException("pull",
-                "Pull did not complete — resolve the conflict in the workspace and try again. " + detail);
+                "The remote has changes that conflict with this branch, and they cannot be merged "
+                        + "automatically. The workspace was left as it was. " + detail);
     }
 
     /**
@@ -824,22 +852,27 @@ public class GitServiceImpl implements GitService {
 
     @Override
     public WorkspaceStatus getStatus(WorkspaceInfo workspace) {
-        // Without a fetch the remote-tracking refs never move, so the behind count
-        // would always read zero and a user would only learn of a teammate's push
-        // when their own push is rejected. Done outside the lock: a slow remote
-        // must not hold up saves on this workspace.
-        fetchQuietly(getGitInstance(workspace), workspace);
-
         return withLockReturn(workspace, () -> {
             Git git = getGitInstance(workspace);
             updateLastAccessed(workspace);
             try {
+                // Without a fetch the remote-tracking refs never move, so the behind
+                // count would always read zero and a user would only learn of a
+                // teammate's push when their own is rejected. Inside the lock: it
+                // rewrites refs that a concurrent pull or push on this clone uses.
+                // The timeout bounds how long a slow remote can hold the lock.
+                fetchQuietly(git, workspace);
+
                 // Only THUB/ is ever staged, so only THUB/ decides whether the
                 // workspace is clean — otherwise an unrelated file would leave the
                 // panel dirty forever and invite a chain of empty commits
                 Status status = git.status().addPath(THUB_DIR).call();
                 // Everything the user could still lose, in one sorted list
                 Set<String> changed = new TreeSet<>();
+                // Conflicted paths appear only in getConflicting(); without them a
+                // workspace stuck mid-merge would report itself clean, hiding the
+                // files and disabling the very buttons needed to get out of it
+                changed.addAll(status.getConflicting());
                 changed.addAll(status.getAdded());
                 changed.addAll(status.getChanged());
                 changed.addAll(status.getRemoved());

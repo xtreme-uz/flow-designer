@@ -230,6 +230,31 @@ class GitServiceImplTest {
     }
 
     @Nested
+    @DisplayName("Branch Publication Tests")
+    class BranchPublicationTests {
+
+        @Test
+        @DisplayName("A new branch starts from the current branch's work, not the default branch")
+        void newBranchCarriesCurrentWork() throws IOException {
+            WorkspaceInfo source = gitService.getOrCreateWorkspace("brancher", "feature/TASK-11-source");
+            Files.writeString(source.path().resolve("source-work.json"), "{}");
+            gitService.add(source, ".");
+            gitService.commit(source, "Source work",
+                    AuditInfo.of("brancher", "Brancher", "brancher@example.com"), null);
+            gitService.push(source);
+
+            gitService.createAndPushBranch(source, "feature/TASK-12-derived");
+
+            assertEquals("feature/TASK-11-source", gitService.getStatus(source).branchName(),
+                    "the source workspace stays on its own branch");
+
+            WorkspaceInfo derived = gitService.getOrCreateWorkspace("brancher", "feature/TASK-12-derived");
+            assertTrue(Files.exists(derived.path().resolve("source-work.json")),
+                    "the new branch carries the work it was branched from");
+        }
+    }
+
+    @Nested
     @DisplayName("Pull Safety Tests")
     class PullSafetyTests {
 
