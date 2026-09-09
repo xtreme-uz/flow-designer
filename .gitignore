@@ -44,3 +44,4 @@ src/main/resources/static/
 
 ### Local dev secrets (never commit)
 secret.run-dev.sh
+.env

@@ -41,3 +41,21 @@ jobs:
           path: |
             target/surefire-reports/
           retention-days: 7
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Builds the release image the same way the release workflow does, without
+      # publishing it: a Dockerfile that only breaks at tag time breaks the release
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: flow-designer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

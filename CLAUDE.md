@@ -11,7 +11,12 @@ A visual editor for payment state machines. Users create payment flows (nodes + 
 ```
 flow-designer/
 ├── LICENSE                          # MIT
-├── .github/workflows/ci.yml         # CI: mvn verify on JDK 25 (backend + frontend)
+├── README.md                        # User-facing: Docker quick start, configuration
+├── CHANGELOG.md                     # Release notes, newest first
+├── Dockerfile                       # Multi-stage build → JRE image, non-root, volume
+├── docker-compose.yml               # Example deployment (.env.example alongside)
+├── .github/workflows/ci.yml         # CI: mvn verify on JDK 25 + the Docker image build
+├── .github/workflows/release.yml    # On tag v*: jar → GitHub release, image → GHCR
 ├── pom.xml                          # Maven config (builds frontend too, clean plugin)
 ├── run-dev.sh                       # Dev startup (HTTPS, GitLab OAuth2, self-signed cert)
 ├── frontend/                        # React app
@@ -139,12 +144,27 @@ Then run:
 
 `run-dev.sh` auto-creates: `/etc/hosts` entry for `flowdesigner.local`, self-signed SSL cert in `~/.flowdesigner/dev-keystore.p12`.
 
+### Docker
+
+```bash
+docker compose up -d          # reads .env; see .env.example
+```
+
+Git clones live under `/var/lib/flowdesigner` — mount it, a workspace can hold saved but
+uncommitted work. `GET /actuator/health` is the probe the image's HEALTHCHECK uses.
+
+### Release
+
+`mvn` version, `frontend/package.json` version and the tag must agree — the release workflow
+fails the build when the tag does not match the POM version. Tag `v1.0.0` publishes the jar
+to a GitHub release and the image to `ghcr.io/xtreme-uz/flow-designer`.
+
 ### Production Build
 
 ```bash
 cd flow-designer
 mvn clean package    # clean removes target/ + frontend/dist/ + src/main/resources/static/
-java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
+java -jar target/flow-designer-1.0.0.jar
 ```
 
 ### Run Tests
@@ -246,6 +266,11 @@ Save: React Flow canvas → reactFlowToThub() → ThubDeploymentData → merge i
 ### Headers
 - `X-User-Id` - User identifier (default: "anonymous")
 - `X-Branch` - Current branch (default: "main")
+
+### Health
+```
+GET  /actuator/health                    # Status only, no details, no auth (probes)
+```
 
 ### Auth
 ```
@@ -430,6 +455,7 @@ POST /api/workspaces/branch              # Create new branch
 - [x] CI (GitHub Actions)
 - [x] Canvas layout persistence
 - [x] Per-user Git identity for push (opt-in)
+- [x] Docker image + release workflow (GHCR, tagged `v*`)
 - [ ] Multi-instance deployment — workspaces, locks and clones are per-process today
 
 ## Conventions

@@ -13,7 +13,7 @@
 
     <groupId>uz.xtreme</groupId>
     <artifactId>flow-designer</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>flow-designer</name>
     <description>Flow Designer - Spring Boot with React Flow</description>
 
@@ -55,6 +55,12 @@
         </dependency>
 
         <!-- OAuth2 Client (GitLab SSO) -->
+        <!-- /actuator/health for container and orchestrator probes -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-client</artifactId>

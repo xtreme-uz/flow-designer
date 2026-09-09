@@ -48,6 +48,9 @@ public class SecurityConfig {
                 // Which host to sign in through is not a secret, and the login
                 // page needs it before a session exists
                 .requestMatchers("/api/auth/provider").permitAll()
+                // Container and orchestrator probes run before any login, and the
+                // endpoint reports status only — never details
+                .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             )

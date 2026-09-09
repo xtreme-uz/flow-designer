@@ -6,6 +6,20 @@ server:
   port: 8080
   forward-headers-strategy: native
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health only. The others would expose configuration and environment,
+        # secrets included, to anything that can reach the port
+        include: health
+  endpoint:
+    health:
+      # A probe asks whether the instance is up, and nothing else needs to be public
+      show-details: never
+      probes:
+        enabled: true
+
 app:
   oauth2:
     # Which Git host people sign in through: gitlab or github. Pick the one that
