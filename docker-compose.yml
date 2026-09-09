@@ -1,0 +1,17 @@
+# Example deployment. Copy .env.example to .env, fill it in, then:
+#   docker compose up -d
+services:
+  flow-designer:
+    image: ghcr.io/xtreme-uz/flow-designer:1.0.0
+    # Build locally instead of pulling: docker compose up -d --build
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      # Workspaces hold saved-but-uncommitted work; losing them loses that work
+      - flowdesigner-data:/var/lib/flowdesigner
+
+volumes:
+  flowdesigner-data:

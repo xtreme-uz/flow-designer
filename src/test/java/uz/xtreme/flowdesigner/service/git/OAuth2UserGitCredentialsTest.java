@@ -49,7 +49,11 @@ class OAuth2UserGitCredentialsTest {
     }
 
     private OAuth2AuthorizedClientService serviceWithToken(String token, Instant expiresAt) {
-        ClientRegistration registration = ClientRegistration.withRegistrationId(REGISTRATION_ID)
+        return serviceWithToken(REGISTRATION_ID, token, expiresAt);
+    }
+
+    private OAuth2AuthorizedClientService serviceWithToken(String registrationId, String token, Instant expiresAt) {
+        ClientRegistration registration = ClientRegistration.withRegistrationId(registrationId)
                 .clientId("id")
                 .clientSecret("secret")
                 .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
@@ -64,7 +68,7 @@ class OAuth2UserGitCredentialsTest {
                         Instant.now().minusSeconds(60), expiresAt));
 
         OAuth2AuthorizedClientService service = mock(OAuth2AuthorizedClientService.class);
-        when(service.loadAuthorizedClient(REGISTRATION_ID, USERNAME)).thenReturn(client);
+        when(service.loadAuthorizedClient(registrationId, USERNAME)).thenReturn(client);
         return service;
     }
 
@@ -76,11 +80,15 @@ class OAuth2UserGitCredentialsTest {
     }
 
     private void authenticateOAuth2User() {
+        authenticateOAuth2User(REGISTRATION_ID);
+    }
+
+    private void authenticateOAuth2User(String registrationId) {
         var principal = new DefaultOAuth2User(
                 AuthorityUtils.createAuthorityList("ROLE_USER"),
                 Map.of("username", USERNAME), "username");
         SecurityContextHolder.getContext().setAuthentication(
-                new OAuth2AuthenticationToken(principal, principal.getAuthorities(), REGISTRATION_ID));
+                new OAuth2AuthenticationToken(principal, principal.getAuthorities(), registrationId));
     }
 
     @Test
@@ -97,6 +105,24 @@ class OAuth2UserGitCredentialsTest {
         assertTrue(resolved.get().get(new URIish("https://example.test/repo.git"), user, password));
         assertEquals("oauth2", user.getValue());
         assertEquals("glpat-token", new String(password.getValue()));
+    }
+
+    @Test
+    @DisplayName("Uses the username each host expects for an OAuth2 token")
+    void usernameFollowsTheProvider() throws URISyntaxException {
+        authenticateOAuth2User("github");
+        var credentials = new OAuth2UserGitCredentials(properties(true),
+                provider(serviceWithToken("github", "gho-token", Instant.now().plusSeconds(3600))));
+
+        Optional<CredentialsProvider> resolved = credentials.forCurrentUser();
+
+        assertTrue(resolved.isPresent());
+        CredentialItem.Username user = new CredentialItem.Username();
+        CredentialItem.Password password = new CredentialItem.Password();
+        assertTrue(resolved.get().get(new URIish("https://example.test/repo.git"), user, password));
+        // GitHub refuses GitLab's "oauth2" username
+        assertEquals("x-access-token", user.getValue());
+        assertEquals("gho-token", new String(password.getValue()));
     }
 
     @Test

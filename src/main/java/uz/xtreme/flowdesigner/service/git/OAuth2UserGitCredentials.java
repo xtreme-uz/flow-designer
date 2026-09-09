@@ -1,6 +1,7 @@
 package uz.xtreme.flowdesigner.service.git;
 
 import uz.xtreme.flowdesigner.config.GitProperties;
+import uz.xtreme.flowdesigner.config.OAuth2Properties;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.slf4j.Logger;
@@ -24,17 +25,25 @@ import java.util.Optional;
  *
  * <p>Off unless {@code app.git.use-user-credentials} is set, because it only
  * works when the OAuth2 registration asks for a scope that grants repository
- * write access (on GitLab: {@code write_repository}). With the default
- * {@code read_user} scope the token cannot push, so enabling this without
+ * write access (GitLab: {@code write_repository}, GitHub: {@code repo}). With
+ * the default read-only scope the token cannot push, so enabling this without
  * widening the scope would break every push.
+ *
+ * <p>It also only works when the login provider hosts the flows repository: a
+ * GitLab token is not accepted by GitHub, and the other way round.
  */
 @Component
 public class OAuth2UserGitCredentials implements UserGitCredentials {
 
     private static final Logger log = LoggerFactory.getLogger(OAuth2UserGitCredentials.class);
 
-    /** GitLab and GitHub both accept an OAuth2 token as the password under a fixed username. */
-    private static final String OAUTH_USERNAME = "oauth2";
+    /**
+     * The username an OAuth2 token travels under in HTTP basic auth. Both hosts
+     * take the token as the password, but each expects its own fixed username —
+     * GitHub rejects GitLab's "oauth2".
+     */
+    private static final String GITLAB_OAUTH_USERNAME = "oauth2";
+    private static final String GITHUB_OAUTH_USERNAME = "x-access-token";
     private static final Duration EXPIRY_MARGIN = Duration.ofSeconds(30);
 
     private final GitProperties gitProperties;
@@ -88,6 +97,13 @@ public class OAuth2UserGitCredentials implements UserGitCredentials {
         }
 
         return Optional.of(new UsernamePasswordCredentialsProvider(
-                OAUTH_USERNAME, client.getAccessToken().getTokenValue()));
+                oauthUsername(token.getAuthorizedClientRegistrationId()),
+                client.getAccessToken().getTokenValue()));
+    }
+
+    private static String oauthUsername(String registrationId) {
+        return OAuth2Properties.Provider.GITHUB.registrationId().equals(registrationId)
+                ? GITHUB_OAUTH_USERNAME
+                : GITLAB_OAUTH_USERNAME;
     }
 }

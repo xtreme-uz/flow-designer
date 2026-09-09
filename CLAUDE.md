@@ -11,7 +11,12 @@ A visual editor for payment state machines. Users create payment flows (nodes + 
 ```
 flow-designer/
 ├── LICENSE                          # MIT
-├── .github/workflows/ci.yml         # CI: mvn verify on JDK 25 (backend + frontend)
+├── README.md                        # User-facing: Docker quick start, configuration
+├── CHANGELOG.md                     # Release notes, newest first
+├── Dockerfile                       # Multi-stage build → JRE image, non-root, volume
+├── docker-compose.yml               # Example deployment (.env.example alongside)
+├── .github/workflows/ci.yml         # CI: mvn verify on JDK 25 + the Docker image build
+├── .github/workflows/release.yml    # On tag v*: jar → GitHub release, image → GHCR
 ├── pom.xml                          # Maven config (builds frontend too, clean plugin)
 ├── run-dev.sh                       # Dev startup (HTTPS, GitLab OAuth2, self-signed cert)
 ├── frontend/                        # React app
@@ -56,6 +61,8 @@ flow-designer/
     │   │   │   ├── GitConfig.java           # Enables config + scheduling
     │   │   │   ├── SecurityConfig.java      # Spring Security + OAuth2 + CSRF config
     │   │   │   ├── AuthProperties.java      # @ConfigurationProperties(prefix="app.auth") login allowlist
+    │   │   │   ├── OAuth2Properties.java     # @ConfigurationProperties(prefix="app.oauth2") provider choice
+    │   │   │   ├── ClientRegistrationConfig.java # Registers the selected provider (GitLab or GitHub)
     │   │   │   ├── AllowlistOAuth2UserService.java # Refuses logins outside the allowlist
     │   │   │   ├── UserIdHeaderFilter.java  # Injects X-User-Id from OAuth2 principal
     │   │   │   └── OAuth2UserAttributes.java # Provider-agnostic user attribute lookup
@@ -105,6 +112,8 @@ flow-designer/
         ├── FlowDesignerApplicationTests.java
         ├── controller/FlowControllerTest.java
         ├── config/AuthPropertiesTest.java
+        ├── config/ClientRegistrationConfigTest.java
+        ├── controller/AuthControllerTest.java
         └── service/
             ├── git/GitServiceImplTest.java
             ├── git/OAuth2UserGitCredentialsTest.java
@@ -135,18 +144,41 @@ Then run:
 
 `run-dev.sh` auto-creates: `/etc/hosts` entry for `flowdesigner.local`, self-signed SSL cert in `~/.flowdesigner/dev-keystore.p12`.
 
+### Docker
+
+```bash
+docker compose up -d          # reads .env; see .env.example
+```
+
+Git clones live under `/var/lib/flowdesigner` — mount it, a workspace can hold saved but
+uncommitted work. `GET /actuator/health` is the probe the image's HEALTHCHECK uses.
+
+### Release
+
+Cutting a release means bumping the version in four places, then tagging:
+
+1. `pom.xml`
+2. `frontend/package.json`
+3. `docker-compose.yml` (the pinned image tag)
+4. `README.md` (the `docker run` example, the jar name)
+
+Then add the section to `CHANGELOG.md` and push the tag: `git tag v1.0.0 && git push origin
+v1.0.0`. The release workflow refuses a tag that disagrees with the POM version, runs both
+suites, attaches the jar to a GitHub release and pushes the image to
+`ghcr.io/xtreme-uz/flow-designer` (`:{version}` and `:latest`).
+
 ### Production Build
 
 ```bash
 cd flow-designer
 mvn clean package    # clean removes target/ + frontend/dist/ + src/main/resources/static/
-java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
+java -jar target/flow-designer-1.0.0.jar
 ```
 
 ### Run Tests
 
 ```bash
-# All tests — 169 backend (JUnit) + 38 frontend (vitest, jsdom)
+# All tests — 183 backend (JUnit) + 39 frontend (vitest, jsdom)
 cd flow-designer
 mvn test
 
@@ -159,6 +191,28 @@ mvn test -Dtest=GitServiceImplTest
 # Frontend only
 cd frontend && npm test
 ```
+
+## Target Repository
+
+Flows are written to a separate repository — the one `GIT_REMOTE_URL` points at, not this
+source repository. `https://github.com/xtreme-uz/flow-config.git` is the one this project
+is pointed at in `run-dev.sh`.
+
+A brand-new, completely empty repository is a valid target: the first commit from a
+workspace creates `GIT_DEFAULT_BRANCH` on it and publishes the `THUB/` tree. Until then
+the flow list and the branch list are legitimately empty. Nothing needs to be seeded by
+hand.
+
+**The administrator picks the login provider.** `AUTH_PROVIDER` is `gitlab` or `github`;
+only the selected one is registered, and the application refuses to start when its client
+id or secret is missing. Both support a self-hosted instance (`GITLAB_BASE_URL`,
+`GITHUB_BASE_URL` — GitHub Enterprise Server's API is served from the same host under
+`/api/v3`).
+
+Pick the provider that hosts `GIT_REMOTE_URL`. `GIT_USE_USER_CREDENTIALS=true` pushes with
+the signed-in user's OAuth2 token, which only works when the login provider hosts the
+repository — a GitLab token is not accepted by GitHub, or the other way round. With a
+mismatch, leave it off and push with the `GIT_USERNAME` / `GIT_TOKEN` service account.
 
 ## Storage Architecture: THUB Configurator Pattern
 
@@ -221,6 +275,17 @@ Save: React Flow canvas → reactFlowToThub() → ThubDeploymentData → merge i
 - `X-User-Id` - User identifier (default: "anonymous")
 - `X-Branch` - Current branch (default: "main")
 
+### Health
+```
+GET  /actuator/health                    # Status only, no details, no auth (probes)
+```
+
+### Auth
+```
+GET  /api/auth/provider                  # Selected provider { id, displayName, authorizationUrl } (public)
+GET  /api/me                             # Signed-in user { username, name, avatarUrl, email }
+```
+
 ### Branches
 ```
 GET  /api/branches                       # List all remote branches
@@ -277,12 +342,21 @@ POST /api/workspaces/branch              # Create new branch
 | `GIT_TOKEN` | (empty) | Git HTTP auth token |
 | `GIT_SSH_KEY_PATH` | (empty) | Path to SSH key |
 | `GIT_USE_USER_CREDENTIALS` | `false` | Push/pull with the signed-in user's OAuth2 token instead of the service account. Needs a scope granting repository write access (GitLab: `write_repository`) |
+| `AUTH_PROVIDER` | `gitlab` | Which Git host people sign in through: `gitlab` or `github` |
 | `AUTH_ALLOWED_USERNAMES` | (empty) | Comma-separated usernames allowed to sign in (empty = anyone the provider authenticates) |
 | `AUTH_ALLOWED_EMAIL_DOMAINS` | (empty) | Comma-separated email domains allowed to sign in |
-| `GITLAB_CLIENT_ID` | (empty) | GitLab OAuth2 application ID |
+| `GITLAB_CLIENT_ID` | (empty) | GitLab OAuth2 application ID (required when `AUTH_PROVIDER=gitlab`) |
 | `GITLAB_CLIENT_SECRET` | (empty) | GitLab OAuth2 secret |
 | `GITLAB_BASE_URL` | `https://gitlab.com` | GitLab instance for OAuth2 login (self-hosted supported) |
+| `GITLAB_API_URL` | `{base}/api/v4` | User-info API base override |
+| `GITLAB_SCOPE` | `read_user` | OAuth2 scope; add `write_repository` to push as the user |
 | `GITLAB_REDIRECT_URL` | `{baseUrl}/login/oauth2/code/{registrationId}` | OAuth2 redirect URI override |
+| `GITHUB_CLIENT_ID` | (empty) | GitHub OAuth app client ID (required when `AUTH_PROVIDER=github`) |
+| `GITHUB_CLIENT_SECRET` | (empty) | GitHub OAuth app secret |
+| `GITHUB_BASE_URL` | `https://github.com` | GitHub instance (Enterprise Server supported) |
+| `GITHUB_API_URL` | `https://api.github.com`, or `{base}/api/v3` on Enterprise Server | User-info API base override |
+| `GITHUB_SCOPE` | `read:user,user:email` | OAuth2 scope; add `repo` to push as the user |
+| `GITHUB_REDIRECT_URL` | `{baseUrl}/login/oauth2/code/{registrationId}` | OAuth2 redirect URI override |
 | `KEYSTORE_FILE` | (empty) | PKCS12 keystore for HTTPS (dev) |
 | `KEYSTORE_PASS` | (empty) | Keystore password (dev) |
 
@@ -317,6 +391,10 @@ POST /api/workspaces/branch              # Create new branch
 - Workspace identity is stored in `.git/flowdesigner-workspace.properties` (never in the working tree); the branch
   is read back from the repository, so directory names are never parsed
 - Push/pull check `RemoteRefUpdate` / `PullResult` and raise 409 on rejection or conflict
+- An empty remote is bootstrapped, not rejected: a clone of one leaves HEAD unborn on JGit's
+  own default branch name, so HEAD is pointed at `GIT_DEFAULT_BRANCH` before the first commit,
+  and the main repo adopts that branch as soon as it is published instead of staying empty
+  until the next restart
 - Commits set `setSign(false)` and pulls `setRebase(false)` — the server user's global git config must not
   change how the application behaves
 - Workspace git operations use the signed-in user's OAuth2 token when `app.git.use-user-credentials` is on,
@@ -326,7 +404,12 @@ POST /api/workspaces/branch              # Create new branch
 - Post-push main repo refresh
 
 ### Auth
-- **GitLab OAuth2** via Spring Security (`GITLAB_BASE_URL`, defaults to `gitlab.com`)
+- **GitLab or GitHub OAuth2** via Spring Security — `AUTH_PROVIDER` selects one, and
+  `ClientRegistrationConfig` registers only that one. GitLab reads the account name from
+  `username`, GitHub from `login`; `OAuth2UserAttributes` handles both. A GitHub account
+  with a private email returns none, and the commit falls back to `{userId}@flowdesigner.local`
+- `GET /api/auth/provider` is public: the login page names the selected host and follows its
+  authorization URL rather than hard-coding one
 - **Login allowlist** (`app.auth.allowed-usernames` / `allowed-email-domains`) — `AllowlistOAuth2UserService`
   refuses the login before a session exists. Both empty = anyone the provider authenticates (logged as a warning)
 - Session cookie (JSESSIONID) — no localStorage
@@ -376,10 +459,11 @@ POST /api/workspaces/branch              # Create new branch
 - [ ] Flow Deployer service (configuration deployer integration)
 - [x] GitLab OAuth2 authentication
 - [x] Login allowlist (username / email domain)
-- [ ] Additional OAuth2 providers (GitHub, Bitbucket) — see `OAuth2UserAttributes`
+- [x] Additional OAuth2 providers — GitHub added; Bitbucket would be another case in `ClientRegistrationConfig`
 - [x] CI (GitHub Actions)
 - [x] Canvas layout persistence
 - [x] Per-user Git identity for push (opt-in)
+- [x] Docker image + release workflow (GHCR, tagged `v*`)
 - [ ] Multi-instance deployment — workspaces, locks and clones are per-process today
 
 ## Conventions

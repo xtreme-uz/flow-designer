@@ -8,6 +8,7 @@ import uz.xtreme.flowdesigner.exception.GitVersionConflictException;
 import uz.xtreme.flowdesigner.exception.WorkspaceNotFoundException;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.Status;
@@ -20,6 +21,7 @@ import org.eclipse.jgit.lib.ConfigConstants;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -189,6 +191,10 @@ public class GitServiceImpl implements GitService {
                 }
 
                 mainRepo = cloneCommand.call();
+                // A remote with no commits gives back an unborn HEAD on JGit's own
+                // default branch, which the check above would then re-clone on every
+                // restart
+                pointUnbornHeadAtDefaultBranch(mainRepo);
                 log.info("Main repository cloned successfully");
             } else {
                 log.warn("No remote URL configured and no existing repo found at {}", mainPath);
@@ -198,6 +204,28 @@ public class GitServiceImpl implements GitService {
         } catch (GitAPIException | IOException e) {
             throw new GitOperationException("Failed to initialize main repository", e);
         }
+    }
+
+    /**
+     * Points an unborn HEAD at the configured default branch.
+     *
+     * <p>Cloning a remote that has no commits yet leaves HEAD on JGit's own
+     * default branch name, whatever the clone asked for. The first commit would
+     * then create that branch and the push would publish it, while the workspace
+     * still reports the configured one — a repository set up for {@code main}
+     * would quietly gain a {@code master}.
+     */
+    private void pointUnbornHeadAtDefaultBranch(Git git) throws IOException {
+        Repository repo = git.getRepository();
+        if (repo.resolve(Constants.HEAD) != null) {
+            return;
+        }
+        String target = Constants.R_HEADS + properties.defaultBranch();
+        if (target.equals(repo.getFullBranch())) {
+            return;
+        }
+        RefUpdate.Result result = repo.updateRef(Constants.HEAD, true).link(target);
+        log.info("Empty remote: pointed HEAD at {} ({})", target, result);
     }
 
     @Override
@@ -232,10 +260,13 @@ public class GitServiceImpl implements GitService {
                 return;
             }
 
-            // Check if repo has any commits - skip pull for empty repos
+            // Check if repo has any commits - a pull cannot run on an unborn HEAD.
+            // The remote may have gained its first commit since the clone, though —
+            // that is what happens the moment the first workspace pushes — so try to
+            // adopt it rather than staying empty until the next restart.
             ObjectId head = mainRepo.getRepository().resolve("HEAD");
             if (head == null) {
-                log.debug("Main repository is empty (no commits), skipping pull");
+                adoptDefaultBranchIfPublished();
                 return;
             }
 
@@ -259,6 +290,41 @@ public class GitServiceImpl implements GitService {
             throw new GitOperationException("Failed to pull main repository", e);
         } finally {
             mainRepoLock.unlock();
+        }
+    }
+
+    /**
+     * Checks out the default branch in the main repository once the remote has it.
+     *
+     * <p>Called while the main clone still has an unborn HEAD: a repository that was
+     * empty when the application started stays that way for every read — no flows,
+     * no branches — until something notices the branch has since been published.
+     */
+    private void adoptDefaultBranchIfPublished() {
+        String branch = properties.defaultBranch();
+        try {
+            var fetchCommand = mainRepo.fetch().setRemote("origin");
+            if (credentialsProvider != null) {
+                fetchCommand.setCredentialsProvider(credentialsProvider);
+            }
+            fetchCommand.call();
+
+            if (mainRepo.getRepository().resolve(Constants.R_REMOTES + "origin/" + branch) == null) {
+                log.debug("Main repository is empty and the remote has no '{}' branch yet", branch);
+                return;
+            }
+
+            mainRepo.checkout()
+                    .setName(branch)
+                    .setCreateBranch(true)
+                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                    .setStartPoint("origin/" + branch)
+                    .call();
+            lastMainRepoPull = Instant.now();
+            log.info("Main repository picked up branch '{}' published since startup", branch);
+        } catch (GitAPIException | IOException e) {
+            // Nothing depends on this working: the next call tries again
+            log.warn("Could not adopt branch '{}' in the main repository", branch, e);
         }
     }
 
@@ -462,6 +528,7 @@ public class GitServiceImpl implements GitService {
             ObjectId head = git.getRepository().resolve("HEAD");
             if (head == null) {
                 log.info("Empty repository detected for workspace {}, creating initial commit", workspaceId);
+                pointUnbornHeadAtDefaultBranch(git);
                 Path thubDir = workspacePath.resolve(THUB_DIR);
                 Files.createDirectories(thubDir);
                 Files.writeString(thubDir.resolve(".gitkeep"), "");

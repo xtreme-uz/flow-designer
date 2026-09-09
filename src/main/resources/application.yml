@@ -1,43 +1,50 @@
 spring:
   application:
     name: flow-designer
-  security:
-    oauth2:
-      client:
-        registration:
-          gitlab:
-            client-id: ${GITLAB_CLIENT_ID}
-            client-secret: ${GITLAB_CLIENT_SECRET}
-            authorization-grant-type: authorization_code
-            redirect-uri: ${GITLAB_REDIRECT_URL:{baseUrl}/login/oauth2/code/{registrationId}}
-            scope: read_user
-            client-name: GitLab
-        provider:
-          gitlab:
-            # Set GITLAB_BASE_URL to a self-hosted instance (e.g. https://gitlab.example.com)
-            authorization-uri: ${GITLAB_BASE_URL:https://gitlab.com}/oauth/authorize
-            token-uri: ${GITLAB_BASE_URL:https://gitlab.com}/oauth/token
-            user-info-uri: ${GITLAB_BASE_URL:https://gitlab.com}/api/v4/user
-            user-name-attribute: username
-
-# Other Git hosts use the same OAuth2 authorization-code flow — adding one is
-# a matter of declaring another registration/provider pair. The backend reads
-# user attributes provider-agnostically (see AuthController), so no Java change
-# is needed. Example, to enable GitHub login:
-#
-# spring.security.oauth2.client:
-#   registration:
-#     github:
-#       client-id: ${GITHUB_CLIENT_ID}
-#       client-secret: ${GITHUB_CLIENT_SECRET}
-#       scope: read:user,user:email
-#   # provider defaults for github are built into Spring Security
 
 server:
   port: 8080
   forward-headers-strategy: native
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health only. The others would expose configuration and environment,
+        # secrets included, to anything that can reach the port
+        include: health
+  endpoint:
+    health:
+      # A probe asks whether the instance is up, and nothing else needs to be public
+      show-details: never
+      probes:
+        enabled: true
+
 app:
+  oauth2:
+    # Which Git host people sign in through: gitlab or github. Pick the one that
+    # hosts app.git.remote-url — a login on one host cannot authorise a push to
+    # another. Only the selected provider is registered; the application refuses
+    # to start when its client id and secret are missing.
+    provider: ${AUTH_PROVIDER:gitlab}
+    gitlab:
+      client-id: ${GITLAB_CLIENT_ID:}
+      client-secret: ${GITLAB_CLIENT_SECRET:}
+      # A self-hosted instance, e.g. https://gitlab.example.com
+      base-url: ${GITLAB_BASE_URL:}
+      api-url: ${GITLAB_API_URL:}
+      redirect-uri: ${GITLAB_REDIRECT_URL:}
+      # write_repository is what pushing as the signed-in user needs
+      scope: ${GITLAB_SCOPE:read_user}
+    github:
+      client-id: ${GITHUB_CLIENT_ID:}
+      client-secret: ${GITHUB_CLIENT_SECRET:}
+      # A GitHub Enterprise Server instance, e.g. https://github.example.com
+      base-url: ${GITHUB_BASE_URL:}
+      api-url: ${GITHUB_API_URL:}
+      redirect-uri: ${GITHUB_REDIRECT_URL:}
+      # repo is what pushing as the signed-in user needs
+      scope: ${GITHUB_SCOPE:read:user,user:email}
   auth:
     # Who may sign in. Leave both empty only on an instance whose accounts are
     # already the intended audience — otherwise every account the provider
@@ -50,8 +57,8 @@ app:
     workspaces-path: ${GIT_WORKSPACES_PATH:/tmp/app/flows-repo/workspaces}
     default-branch: ${GIT_DEFAULT_BRANCH:main}
     # Push and pull as the signed-in user instead of the service account below.
-    # Needs an OAuth2 scope that grants repository write access — on GitLab add
-    # write_repository to the scope list above; the default read_user cannot push.
+    # Needs an OAuth2 scope that grants repository write access (GitLab:
+    # write_repository, GitHub: repo) and a remote hosted by the login provider.
     use-user-credentials: ${GIT_USE_USER_CREDENTIALS:false}
     credentials:
       username: ${GIT_USERNAME:}

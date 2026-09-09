@@ -1,0 +1,14 @@
+# Everything the build produces or does not need. Keeping these out avoids
+# shipping a host build into the image and keeps the context small.
+target/
+frontend/dist/
+frontend/node_modules/
+src/main/resources/static/
+.git/
+.github/
+*.md
+run-dev.sh
+Dockerfile
+.dockerignore
+docker-compose.yml
+.env
