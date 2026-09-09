@@ -2,6 +2,15 @@
 
 Notable changes to Flow Designer. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Fixed
+
+- An instance started without `GIT_REMOTE_URL`, and with no existing clone at the main
+  repository path, now refuses to start and names the setting. It used to start, let people
+  sign in, and then fail the first branch or flow operation with `Cannot parse Git URI-ish:
+  The uri was empty or null` — a 500 nowhere near the missing setting.
+
 ## [1.0.0] — 2026-09-09
 
 First release. The editor, its Git storage and its authentication are complete enough to

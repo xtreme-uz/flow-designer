@@ -196,8 +196,16 @@ public class GitServiceImpl implements GitService {
                 // restart
                 pointUnbornHeadAtDefaultBranch(mainRepo);
                 log.info("Main repository cloned successfully");
-            } else {
-                log.warn("No remote URL configured and no existing repo found at {}", mainPath);
+            }
+
+            if (mainRepo == null) {
+                // Everything here is Git-backed, so an instance without a repository
+                // can do nothing but fail later: login succeeds, and the first branch
+                // or flow operation dies on an empty clone URL, far from the setting
+                // that is missing
+                throw new IllegalStateException(
+                        "No flows repository. Set GIT_REMOTE_URL to the repository flows are written "
+                                + "to — it may be an empty one — or leave an existing clone at " + mainPath);
             }
         } catch (TransportException e) {
             throw new GitAuthenticationException("Failed to authenticate with Git remote", e);

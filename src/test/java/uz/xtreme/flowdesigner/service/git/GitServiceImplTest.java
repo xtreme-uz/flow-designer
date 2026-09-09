@@ -509,6 +509,26 @@ class GitServiceImplTest {
         void shouldPullMainRepo() {
             assertDoesNotThrow(() -> gitService.pullMainRepo());
         }
+
+        @Test
+        @DisplayName("Should refuse to start without a repository to work on")
+        void refusesToStartWithoutARepository() {
+            // Otherwise the instance starts, the login succeeds, and the first
+            // branch or flow operation dies on an empty clone URL — nowhere near
+            // the setting that is missing
+            GitProperties noRemote = new GitProperties(
+                    "",
+                    tempDir.resolve("empty-main").toString(),
+                    tempDir.resolve("empty-workspaces").toString(),
+                    "main",
+                    false,
+                    new GitProperties.Credentials(null, null, null),
+                    new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true));
+
+            GitServiceImpl service = new GitServiceImpl(noRemote);
+            IllegalStateException failure = assertThrows(IllegalStateException.class, service::init);
+            assertTrue(failure.getMessage().contains("GIT_REMOTE_URL"), failure.getMessage());
+        }
     }
 
     @Nested
