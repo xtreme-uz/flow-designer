@@ -155,9 +155,17 @@ uncommitted work. `GET /actuator/health` is the probe the image's HEALTHCHECK us
 
 ### Release
 
-`mvn` version, `frontend/package.json` version and the tag must agree — the release workflow
-fails the build when the tag does not match the POM version. Tag `v1.0.0` publishes the jar
-to a GitHub release and the image to `ghcr.io/xtreme-uz/flow-designer`.
+Cutting a release means bumping the version in four places, then tagging:
+
+1. `pom.xml`
+2. `frontend/package.json`
+3. `docker-compose.yml` (the pinned image tag)
+4. `README.md` (the `docker run` example, the jar name)
+
+Then add the section to `CHANGELOG.md` and push the tag: `git tag v1.0.0 && git push origin
+v1.0.0`. The release workflow refuses a tag that disagrees with the POM version, runs both
+suites, attaches the jar to a GitHub release and pushes the image to
+`ghcr.io/xtreme-uz/flow-designer` (`:{version}` and `:latest`).
 
 ### Production Build
 
