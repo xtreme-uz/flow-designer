@@ -2,13 +2,17 @@
 
 export SPRING_PROFILES_ACTIVE=dev
 
-export GIT_REMOTE_URL=<your-git-remote-url>
+# The flows repository Flow Designer writes to. It may be empty: the first save
+# creates GIT_DEFAULT_BRANCH on it, with the THUB files under it.
+export GIT_REMOTE_URL=https://github.com/xtreme-uz/flow-config.git
 export GIT_DEFAULT_BRANCH=develop
 export GIT_USERNAME=<your-git-username>
 export GIT_TOKEN=<your-git-personal-access-token>
 
 # Push as the signed-in user rather than the token above. Requires
-# write_repository in the OAuth2 scope (see application.yml).
+# write_repository in the OAuth2 scope (see application.yml) — and only works
+# when the login provider hosts the repository, so leave it off while the remote
+# is on GitHub and login goes through GitLab.
 export GIT_USE_USER_CREDENTIALS=false
 
 # Uncomment for a self-hosted GitLab (defaults to https://gitlab.com)

@@ -146,7 +146,7 @@ java -jar target/flow-designer-0.0.1-SNAPSHOT.jar
 ### Run Tests
 
 ```bash
-# All tests — 169 backend (JUnit) + 38 frontend (vitest, jsdom)
+# All tests — 171 backend (JUnit) + 38 frontend (vitest, jsdom)
 cd flow-designer
 mvn test
 
@@ -159,6 +159,22 @@ mvn test -Dtest=GitServiceImplTest
 # Frontend only
 cd frontend && npm test
 ```
+
+## Target Repository
+
+Flows are written to a separate repository — the one `GIT_REMOTE_URL` points at, not this
+source repository. `https://github.com/xtreme-uz/flow-config.git` is the one this project
+is pointed at in `run-dev.sh`.
+
+A brand-new, completely empty repository is a valid target: the first commit from a
+workspace creates `GIT_DEFAULT_BRANCH` on it and publishes the `THUB/` tree. Until then
+the flow list and the branch list are legitimately empty. Nothing needs to be seeded by
+hand.
+
+**Login provider and remote host are separate.** `GIT_USE_USER_CREDENTIALS=true` pushes
+with the signed-in user's OAuth2 token, which only works when the login provider hosts the
+repository. Login is GitLab OAuth2 today, so a GitHub remote must push with the
+`GIT_USERNAME` / `GIT_TOKEN` service account — a GitHub OAuth2 provider is still open work.
 
 ## Storage Architecture: THUB Configurator Pattern
 
@@ -317,6 +333,10 @@ POST /api/workspaces/branch              # Create new branch
 - Workspace identity is stored in `.git/flowdesigner-workspace.properties` (never in the working tree); the branch
   is read back from the repository, so directory names are never parsed
 - Push/pull check `RemoteRefUpdate` / `PullResult` and raise 409 on rejection or conflict
+- An empty remote is bootstrapped, not rejected: a clone of one leaves HEAD unborn on JGit's
+  own default branch name, so HEAD is pointed at `GIT_DEFAULT_BRANCH` before the first commit,
+  and the main repo adopts that branch as soon as it is published instead of staying empty
+  until the next restart
 - Commits set `setSign(false)` and pulls `setRebase(false)` — the server user's global git config must not
   change how the application behaves
 - Workspace git operations use the signed-in user's OAuth2 token when `app.git.use-user-credentials` is on,

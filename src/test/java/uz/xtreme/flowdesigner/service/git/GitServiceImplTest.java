@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -354,6 +355,83 @@ class GitServiceImplTest {
                 restarted.destroy();
                 gitService = null;
             }
+        }
+    }
+
+    @Nested
+    @DisplayName("Empty Remote Tests")
+    class EmptyRemoteTests {
+
+        private Path emptyRemotePath;
+        private GitServiceImpl service;
+
+        @BeforeEach
+        void setUpEmptyRemote() throws GitAPIException {
+            // A repository created on the host and never pushed to: no commits,
+            // no branches, not even the default one
+            emptyRemotePath = tempDir.resolve("empty-remote.git");
+            Git.init().setDirectory(emptyRemotePath.toFile()).setBare(true).call().close();
+
+            GitProperties properties = new GitProperties(
+                    emptyRemotePath.toUri().toString(),
+                    tempDir.resolve("empty-main").toString(),
+                    tempDir.resolve("empty-workspaces").toString(),
+                    "main",
+                    false,
+                    new GitProperties.Credentials(null, null, null),
+                    new GitProperties.Cleanup(Duration.ofHours(1), Duration.ofMinutes(30), true));
+
+            service = new GitServiceImpl(properties);
+            service.init();
+        }
+
+        @AfterEach
+        void tearDownEmptyRemote() {
+            if (service != null) {
+                service.destroy();
+                service = null;
+            }
+        }
+
+        @Test
+        @DisplayName("Publishes the configured default branch, not JGit's own")
+        void firstPushCreatesConfiguredBranch() throws Exception {
+            WorkspaceInfo workspace = service.getOrCreateWorkspace("first", "main");
+            Files.writeString(workspace.path().resolve("THUB/FlowType-data.json"),
+                    "{\"dataEntities\":{}}");
+            service.addManagedFiles(workspace);
+            service.commit(workspace, "Seed", AuditInfo.of("first", "First", "first@example.com"), null);
+            service.push(workspace);
+
+            // Cloning an empty remote leaves HEAD on JGit's default branch name, so
+            // without the fix this pushes 'master' to a repository set up for 'main'
+            assertEquals("main", service.getStatus(workspace).branchName());
+            try (Git remote = Git.open(emptyRemotePath.toFile())) {
+                assertTrue(remote.getRepository().resolve("refs/heads/main") != null,
+                        "the remote should now have the configured default branch");
+                assertNull(remote.getRepository().resolve("refs/heads/master"));
+            }
+        }
+
+        @Test
+        @DisplayName("Main repository picks up the branch published after startup")
+        void mainRepoAdoptsBranchPublishedLater() throws Exception {
+            // The application started against a remote with nothing in it
+            assertEquals(List.of(), service.listBranches());
+
+            WorkspaceInfo workspace = service.getOrCreateWorkspace("first", "main");
+            Files.writeString(workspace.path().resolve("THUB/FlowType-data.json"),
+                    "{\"dataEntities\":{}}");
+            service.addManagedFiles(workspace);
+            service.commit(workspace, "Seed", AuditInfo.of("first", "First", "first@example.com"), null);
+            service.push(workspace);
+
+            service.pullMainRepo(true);
+
+            // Without this the main clone stays empty until a restart, so the branch
+            // list and every main-branch read answer nothing
+            assertEquals(List.of("main"), service.listBranches());
+            assertTrue(Files.exists(Path.of(tempDir.resolve("empty-main").toString(), "THUB")));
         }
     }
 
