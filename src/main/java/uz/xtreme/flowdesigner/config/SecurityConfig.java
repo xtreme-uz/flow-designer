@@ -45,6 +45,9 @@ public class SecurityConfig {
                 .requestMatchers("/", "/index.html", "/assets/**", "/*.js",
                                  "/*.css", "/*.ico", "/*.png", "/*.svg").permitAll()
                 .requestMatchers("/oauth2/**", "/login/**").permitAll()
+                // Which host to sign in through is not a secret, and the login
+                // page needs it before a session exists
+                .requestMatchers("/api/auth/provider").permitAll()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             )

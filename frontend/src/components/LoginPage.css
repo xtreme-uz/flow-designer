@@ -94,16 +94,29 @@
   opacity: 0.9;
 }
 
-.login-btn-gitlab {
-  background: #fc6d26;
+.login-btn-gitlab,
+.login-btn-github {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
 }
 
+.login-btn-gitlab {
+  background: #fc6d26;
+}
+
 .login-btn-gitlab:hover {
   background: #e24329;
+  opacity: 1;
+}
+
+.login-btn-github {
+  background: #24292f;
+}
+
+.login-btn-github:hover {
+  background: #1b1f24;
   opacity: 1;
 }
 

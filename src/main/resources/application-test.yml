@@ -6,6 +6,11 @@ server:
   port: 8080
 
 app:
+  oauth2:
+    provider: gitlab
+    gitlab:
+      client-id: test-client-id
+      client-secret: test-client-secret
   git:
     remote-url: file:///tmp/test-flows-repo
     main-repo-path: /tmp/app/flows-repo/main

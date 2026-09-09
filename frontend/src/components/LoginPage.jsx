@@ -2,7 +2,7 @@ import { useAuth } from '../contexts/AuthContext';
 import './LoginPage.css';
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, provider } = useAuth();
 
   // Set by the backend: a rejected account, or any other OAuth2 failure
   const loginError = new URLSearchParams(window.location.search).get('error');
@@ -22,13 +22,14 @@ export default function LoginPage() {
           )}
           {loginError === 'login_failed' && (
             <p className="login-error" role="alert">
-              Sign-in did not complete. Try again — if it keeps failing, the GitLab connection needs checking.
+              Sign-in did not complete. Try again — if it keeps failing, the {provider.displayName} connection
+              needs checking.
             </p>
           )}
-          <button className="login-btn login-btn-gitlab" onClick={login}>
-            Sign in with GitLab
+          <button className={`login-btn login-btn-${provider.id}`} onClick={login}>
+            Sign in with {provider.displayName}
           </button>
-          <p className="login-hint">You will be redirected to your GitLab instance</p>
+          <p className="login-hint">You will be redirected to your {provider.displayName} instance</p>
         </div>
       </div>
     </div>

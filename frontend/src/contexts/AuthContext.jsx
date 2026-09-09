@@ -7,13 +7,22 @@ function getCookie(name) {
   return match ? decodeURIComponent(match[2]) : null;
 }
 
+/** Used until /api/auth/provider answers, and if it never does. */
+const DEFAULT_PROVIDER = {
+  id: 'gitlab',
+  displayName: 'GitLab',
+  authorizationUrl: '/oauth2/authorization/gitlab',
+};
+
 /**
- * Auth Provider - GitLab OAuth2 via Spring Security session.
- * Checks /api/me on mount to restore session. login() redirects to GitLab.
+ * Auth Provider - OAuth2 via Spring Security session.
+ * Checks /api/me on mount to restore session, and asks the backend which Git
+ * host the administrator selected — login() must go to that one, not a fixed one.
  */
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [provider, setProvider] = useState(DEFAULT_PROVIDER);
 
   useEffect(() => {
     fetch('/api/me', { credentials: 'include' })
@@ -23,9 +32,19 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(() => {
-    window.location.href = '/oauth2/authorization/gitlab';
+  useEffect(() => {
+    // Public: the login page needs it before anyone is signed in
+    fetch('/api/auth/provider', { credentials: 'include' })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.authorizationUrl) setProvider(data);
+      })
+      .catch(() => {});
   }, []);
+
+  const login = useCallback(() => {
+    window.location.href = provider.authorizationUrl;
+  }, [provider]);
 
   const logout = useCallback(async () => {
     const csrf = getCookie('XSRF-TOKEN');
@@ -39,7 +58,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: user !== null, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated: user !== null, loading, provider, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
